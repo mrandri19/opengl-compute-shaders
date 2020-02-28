@@ -8,65 +8,54 @@ mod vertex;
 // use shader::Shader;
 use std::ffi::CString;
 
-const DATA_LEN: usize = 8;
+const CHUNK_ROWS: usize = 8;
+const CHUNK_COLS: usize = 8;
+const CHUNK_SIZE: usize = CHUNK_ROWS * CHUNK_COLS;
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Clone, Copy)]
 #[repr(C, packed)]
 struct InputData {
-    data: [GLfloat; DATA_LEN],
+    // These need to be 32bit aligned
+    chunk: [GLuint; CHUNK_SIZE],
+    ray_start: [GLfloat; 4],
+    ray_direction: [GLfloat; 4],
 }
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone, Copy)]
 #[repr(C, packed)]
 struct OutputData {
-    length: GLuint,
-    data: [GLfloat; DATA_LEN],
+    // These need to be 32bit aligned
+    hit: [GLfloat; 4],
+    has_hit: GLboolean,
 }
 
-macro_rules! assert_approx_eq {
-    ($a:expr, $b:expr) => {{
-        let eps = 1.0e-6;
-        let (a, b) = (&$a, &$b);
-        assert!(
-            (*a - *b).abs() < eps,
-            "assertion failed: `(left !== right)` \
-             (left: `{:?}`, right: `{:?}`, expect diff: `{:?}`, real diff: `{:?}`)",
-            *a,
-            *b,
-            eps,
-            (*a - *b).abs()
-        );
-    }};
-    ($a:expr, $b:expr, $eps:expr) => {{
-        let (a, b) = (&$a, &$b);
-        let eps = $eps;
-        assert!(
-            (*a - *b).abs() < eps,
-            "assertion failed: `(left !== right)` \
-             (left: `{:?}`, right: `{:?}`, expect diff: `{:?}`, real diff: `{:?}`)",
-            *a,
-            *b,
-            eps,
-            (*a - *b).abs()
-        );
-    }};
-}
-
-fn get_print_input_ssbo(msg: &str, buffer: GLuint) -> Vec<f32> {
+fn get_print_input_ssbo(msg: &str, buffer: GLuint) {
     unsafe {
         gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, buffer);
         let input_data =
             gl::MapBuffer(gl::SHADER_STORAGE_BUFFER, gl::READ_ONLY) as *const InputData;
 
-        println!("{} {:?}", msg, *input_data);
+        let grid = (*input_data).chunk.to_vec();
+        let mut grid_str = String::new();
+        for y in 0..8 {
+            for x in 0..8 {
+                grid_str += &format!("{:2}", grid[CHUNK_COLS * y + x]);
+            }
+            grid_str += "\n";
+        }
+        println!(
+            "{} InputData\n{}{:?} {:?}",
+            msg,
+            grid_str,
+            (*input_data).ray_start,
+            (*input_data).ray_direction
+        );
 
         gl::UnmapBuffer(gl::SHADER_STORAGE_BUFFER);
         gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
-
-        return (*input_data).data.to_vec();
     }
 }
 
-fn get_print_output_ssbo(msg: &str, buffer: GLuint) -> Vec<f32> {
+fn get_print_output_ssbo(msg: &str, buffer: GLuint) {
     unsafe {
         gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, buffer);
         let output_data =
@@ -76,7 +65,6 @@ fn get_print_output_ssbo(msg: &str, buffer: GLuint) -> Vec<f32> {
 
         gl::UnmapBuffer(gl::SHADER_STORAGE_BUFFER);
         gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
-        return (*output_data).data.to_vec();
     }
 }
 
@@ -100,42 +88,38 @@ fn main() {
     // ************************************************************************
     // load compute shader
     let prefix_sum_cs = {
-        let basic_compute_shader = shader::Shader::from_source(
+        match shader::Shader::from_source(
             &CString::new(include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/shaders/compaction.comp"
+                "/shaders/raycasting.comp"
             )))
             .unwrap(),
             gl::COMPUTE_SHADER,
-        )
-        .unwrap();
-
-        program::Program::new(vec![(basic_compute_shader, gl::COMPUTE_SHADER)]).unwrap()
+        ) {
+            Ok(cs) => program::Program::new(vec![(cs, gl::COMPUTE_SHADER)]).unwrap(),
+            Err(msg) => {
+                eprint!("Shader compilation error:\n{}", msg);
+                std::process::exit(1);
+            }
+        }
     };
 
-    // Generate data and run algorithm on CPU to get expected value
-    let data: [f32; DATA_LEN] = [
-        0.7975555, 0.8064009, 0.3653794, 0.23632169, 0.5929925, 0.4024241, 0.20343924, 0.7010438,
-    ];
-    let expected = {
-        let data_copy = data
-            .to_vec()
-            .iter()
-            .cloned()
-            .filter(|x| *x > 0.3)
-            .collect::<Vec<_>>();
-        data_copy
+    // Generate data
+    let mut chunk = [0; CHUNK_SIZE];
+    for y in 0..CHUNK_COLS {
+        chunk[CHUNK_COLS * y + CHUNK_COLS - 1] = 1;
+        chunk[CHUNK_COLS * y + CHUNK_COLS - 2] = 1;
+    }
+    let ray_start = [0.5, 1.5, 0., 0.];
+    let ray_direction = [2., 1., 0., 0.];
+    let input_data = InputData {
+        chunk,
+        ray_start,
+        ray_direction,
     };
-
-    let input_data = InputData { data };
 
     // ************************************************************************
     // create input, output SSBOs and load input data into input SSBO
-    {
-        // https://github.com/rust-lang/rust/issues/46043
-        let idc = input_data.data;
-        assert_eq!(idc.len(), DATA_LEN);
-    }
 
     let mut input_ssbo = 0;
     let input_index_binding_point = 0;
@@ -193,16 +177,8 @@ fn main() {
 
     // https://computergraphics.stackexchange.com/questions/400/synchronizing-successive-opengl-compute-shader-invocations
     // https://gamedev.stackexchange.com/questions/151563/synchronization-between-several-gldispatchcompute-with-same-ssbos
+    println!();
 
     get_print_input_ssbo("after:", input_ssbo);
-    let res = get_print_output_ssbo("after:", output_ssbo);
-
-    println!("expected: {:?}", expected);
-    {
-        for (l, r) in expected.iter().zip(res) {
-            assert_approx_eq!(l, r);
-        }
-    }
+    get_print_output_ssbo("after:", output_ssbo);
 }
-
-// print_output_ssbo("after:", output_ssbo);
