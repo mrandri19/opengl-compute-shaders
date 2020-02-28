@@ -8,7 +8,7 @@ mod vertex;
 // use shader::Shader;
 use std::ffi::CString;
 
-const DATA_LEN: usize = 32;
+const DATA_LEN: usize = 8;
 
 #[derive(Debug, Copy, Clone)]
 #[repr(C, packed)]
@@ -18,6 +18,7 @@ struct InputData {
 #[derive(Debug, Copy, Clone)]
 #[repr(C, packed)]
 struct OutputData {
+    length: GLuint,
     data: [GLfloat; DATA_LEN],
 }
 
@@ -65,7 +66,7 @@ fn get_print_input_ssbo(msg: &str, buffer: GLuint) -> Vec<f32> {
     }
 }
 
-fn print_output_ssbo(msg: &str, buffer: GLuint) {
+fn get_print_output_ssbo(msg: &str, buffer: GLuint) -> Vec<f32> {
     unsafe {
         gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, buffer);
         let output_data =
@@ -75,6 +76,7 @@ fn print_output_ssbo(msg: &str, buffer: GLuint) {
 
         gl::UnmapBuffer(gl::SHADER_STORAGE_BUFFER);
         gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
+        return (*output_data).data.to_vec();
     }
 }
 
@@ -101,7 +103,7 @@ fn main() {
         let basic_compute_shader = shader::Shader::from_source(
             &CString::new(include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/shaders/prefix_sum.comp"
+                "/shaders/compaction.comp"
             )))
             .unwrap(),
             gl::COMPUTE_SHADER,
@@ -112,17 +114,18 @@ fn main() {
     };
 
     // Generate data and run algorithm on CPU to get expected value
-    let data: [f32; DATA_LEN] = rand::random();
+    let data: [f32; DATA_LEN] = [
+        0.7975555, 0.8064009, 0.3653794, 0.23632169, 0.5929925, 0.4024241, 0.20343924, 0.7010438,
+    ];
     let expected = {
-        let mut data_copy = data.to_vec();
-        data_copy.insert(0, 0.);
-        data_copy.pop();
-        for i in 1..data_copy.len() {
-            data_copy[i] += data_copy[i - 1];
-        }
+        let data_copy = data
+            .to_vec()
+            .iter()
+            .cloned()
+            .filter(|x| *x > 0.3)
+            .collect::<Vec<_>>();
         data_copy
     };
-    println!("expected: {:?}", expected);
 
     let input_data = InputData { data };
 
@@ -179,7 +182,7 @@ fn main() {
     // ************************************************************************
     // Run compute shader
     get_print_input_ssbo("before:", input_ssbo);
-    // print_output_ssbo("before:", output_ssbo);
+    get_print_output_ssbo("before:", output_ssbo);
 
     // Perform reduce step on a single block
     prefix_sum_cs.use_();
@@ -191,13 +194,15 @@ fn main() {
     // https://computergraphics.stackexchange.com/questions/400/synchronizing-successive-opengl-compute-shader-invocations
     // https://gamedev.stackexchange.com/questions/151563/synchronization-between-several-gldispatchcompute-with-same-ssbos
 
+    get_print_input_ssbo("after:", input_ssbo);
+    let res = get_print_output_ssbo("after:", output_ssbo);
+
+    println!("expected: {:?}", expected);
     {
-        for (l, r) in expected
-            .iter()
-            .zip(get_print_input_ssbo("after:", input_ssbo))
-        {
-            assert_approx_eq!(l, r, 1e-5f32);
+        for (l, r) in expected.iter().zip(res) {
+            assert_approx_eq!(l, r);
         }
     }
-    // print_output_ssbo("after:", output_ssbo);
 }
+
+// print_output_ssbo("after:", output_ssbo);
