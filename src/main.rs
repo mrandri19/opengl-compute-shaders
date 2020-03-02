@@ -8,24 +8,19 @@ mod vertex;
 // use shader::Shader;
 use std::ffi::CString;
 
-const CHUNK_ROWS: usize = 8;
-const CHUNK_COLS: usize = 8;
-const CHUNK_SIZE: usize = CHUNK_ROWS * CHUNK_COLS;
+const DATA_LEN: usize = 32;
+const WORK_GROUPS: GLuint = 2;
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 #[repr(C, packed)]
 struct InputData {
-    // These need to be 32bit aligned
-    chunk: [GLuint; CHUNK_SIZE],
-    ray_start: [GLfloat; 4],
-    ray_direction: [GLfloat; 4],
+    data: [GLfloat; DATA_LEN],
 }
 #[derive(Debug, Clone, Copy)]
 #[repr(C, packed)]
 struct OutputData {
-    // These need to be 32bit aligned
-    hit: [GLfloat; 4],
-    has_hit: GLboolean,
+    sums: [GLfloat; WORK_GROUPS as usize],
+    data: [GLfloat; DATA_LEN],
 }
 
 fn get_print_input_ssbo(msg: &str, buffer: GLuint) {
@@ -34,21 +29,7 @@ fn get_print_input_ssbo(msg: &str, buffer: GLuint) {
         let input_data =
             gl::MapBuffer(gl::SHADER_STORAGE_BUFFER, gl::READ_ONLY) as *const InputData;
 
-        let grid = (*input_data).chunk.to_vec();
-        let mut grid_str = String::new();
-        for y in 0..8 {
-            for x in 0..8 {
-                grid_str += &format!("{:2}", grid[CHUNK_COLS * y + x]);
-            }
-            grid_str += "\n";
-        }
-        println!(
-            "{} InputData\n{}{:?} {:?}",
-            msg,
-            grid_str,
-            (*input_data).ray_start,
-            (*input_data).ray_direction
-        );
+        println!("{} {:#?}", msg, *input_data);
 
         gl::UnmapBuffer(gl::SHADER_STORAGE_BUFFER);
         gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
@@ -61,7 +42,7 @@ fn get_print_output_ssbo(msg: &str, buffer: GLuint) {
         let output_data =
             gl::MapBuffer(gl::SHADER_STORAGE_BUFFER, gl::READ_ONLY) as *const OutputData;
 
-        println!("{} {:?}", msg, *output_data);
+        println!("{} {:#?}", msg, *output_data);
 
         gl::UnmapBuffer(gl::SHADER_STORAGE_BUFFER);
         gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
@@ -91,7 +72,7 @@ fn main() {
         match shader::Shader::from_source(
             &CString::new(include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/shaders/raycasting.comp"
+                "/shaders/multi_wg_prefix_sum.comp"
             )))
             .unwrap(),
             gl::COMPUTE_SHADER,
@@ -104,19 +85,14 @@ fn main() {
         }
     };
 
-    // Generate data
-    let mut chunk = [0; CHUNK_SIZE];
-    for y in 0..CHUNK_COLS {
-        chunk[CHUNK_COLS * y + CHUNK_COLS - 1] = 1;
-        chunk[CHUNK_COLS * y + CHUNK_COLS - 2] = 1;
+    let mut data = [0.; DATA_LEN];
+    for i in 0..data.len() {
+        data[i] = i as GLfloat;
+        if i >= DATA_LEN / 2 {
+            data[i] *= -1.;
+        }
     }
-    let ray_start = [0.5, 1.5, 0., 0.];
-    let ray_direction = [2., 1., 0., 0.];
-    let input_data = InputData {
-        chunk,
-        ray_start,
-        ray_direction,
-    };
+    let input_data = InputData { data };
 
     // ************************************************************************
     // create input, output SSBOs and load input data into input SSBO
@@ -166,12 +142,12 @@ fn main() {
     // ************************************************************************
     // Run compute shader
     get_print_input_ssbo("before:", input_ssbo);
-    get_print_output_ssbo("before:", output_ssbo);
+    // get_print_output_ssbo("before:", output_ssbo);
 
     // Perform reduce step on a single block
     prefix_sum_cs.use_();
     unsafe {
-        gl::DispatchCompute(1, 1, 1);
+        gl::DispatchCompute(WORK_GROUPS, 1, 1);
         gl::MemoryBarrier(gl::BUFFER_UPDATE_BARRIER_BIT);
     };
 
@@ -179,6 +155,6 @@ fn main() {
     // https://gamedev.stackexchange.com/questions/151563/synchronization-between-several-gldispatchcompute-with-same-ssbos
     println!();
 
-    get_print_input_ssbo("after:", input_ssbo);
+    // get_print_input_ssbo("after:", input_ssbo);
     get_print_output_ssbo("after:", output_ssbo);
 }
