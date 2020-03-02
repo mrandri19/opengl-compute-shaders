@@ -20,7 +20,7 @@ layout(std430, binding = 1) coherent buffer OutputData {
 }
 output_data;
 
-float prefix_sum(inout float offsets[N], uint T) {
+float prefix_sum_return_total(inout float offsets[N], uint T) {
   float sum = -100.;
   // **************************************************************************
   // Reduce
@@ -64,28 +64,80 @@ float prefix_sum(inout float offsets[N], uint T) {
     }
   }
 
-  barrier();
-  memoryBarrier();
-
   return sum;
 }
 
+void prefix_sum(inout float sums[WORK_GROUPS], uint T) {
+  // **************************************************************************
+  // Reduce
+  uint offset = 1;
+
+  for (uint d = WORK_GROUPS >> 1; d > 0; d >>= 1) {
+    barrier();
+    memoryBarrier(); // TODO: do I really need both of these? A. yes but maybe
+                     // not when I use shared memory instead
+
+    if (T < d) {
+      uint ai = offset * (2 * T + 1) - 1;
+      uint bi = offset * (2 * T + 2) - 1;
+      sums[bi] += sums[ai];
+    }
+
+    offset *= 2;
+  }
+
+  // **************************************************************************
+  // Down-sweep
+  if (T == 0) {
+    sums[WORK_GROUPS - 1] = 0;
+  }
+
+  for (uint d = 1; d < WORK_GROUPS; d *= 2) {
+    offset >>= 1;
+
+    barrier();
+    memoryBarrier();
+
+    if (T < d) {
+      uint ai = offset * (2 * T + 1) - 1;
+      uint bi = offset * (2 * T + 2) - 1;
+
+      float t = sums[ai];
+
+      sums[ai] = sums[bi];
+      sums[bi] += t;
+    }
+  }
+}
+
 shared float block[N];
+shared float increments[WORK_GROUPS];
 
 void main() {
   uint W = gl_WorkGroupID.x;
   uint T = gl_LocalInvocationID.x;
 
+  // Copy global memory data into wg-shared data
   block[2 * T] = input_data.data[(W * N) + (2 * T)];
   block[2 * T + 1] = input_data.data[(W * N) + (2 * T + 1)];
+  // Wait for the copy to be done
   barrier();
   memoryBarrier();
 
-  float sums = prefix_sum(block, T);
+  // Perform the prefix sum on the input data, returning the total sum before
+  // replacing the last element with 0
+  float sum = prefix_sum_return_total(block, T);
   if (T == 0) {
-    output_data.sums[W] = sums;
+    output_data.sums[W] = sum;
   }
+  // Wait for the prefix sum and the write to be done
+  barrier();
+  memoryBarrier();
 
+  // Copy wg-shared data back to global memory
   output_data.data[(W * N) + (2 * T)] = block[2 * T];
   output_data.data[(W * N) + (2 * T + 1)] = block[2 * T + 1];
+  // Wait for the data to be copied
+  barrier();
+  memoryBarrier();
 }

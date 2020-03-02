@@ -5,10 +5,10 @@ mod debug_message_callback;
 mod program;
 mod shader;
 mod vertex;
-// use shader::Shader;
+use program::Program;
 use std::ffi::CString;
 
-const DATA_LEN: usize = 32;
+const DATA_LEN: usize = 8;
 const WORK_GROUPS: GLuint = 2;
 
 #[derive(Debug, Clone, Copy)]
@@ -21,6 +21,18 @@ struct InputData {
 struct OutputData {
     sums: [GLfloat; WORK_GROUPS as usize],
     data: [GLfloat; DATA_LEN],
+}
+
+fn inplace_exclusive_prefix_sum(a: &mut [GLfloat; WORK_GROUPS as usize]) {
+    let mut v = a.to_vec();
+    v.insert(0, 0.);
+    for i in 1..v.len() {
+        v[i] += v[i - 1];
+    }
+    v.pop();
+    for i in 0..v.len() {
+        a[i] = v[i];
+    }
 }
 
 fn get_print_input_ssbo(msg: &str, buffer: GLuint) {
@@ -49,6 +61,58 @@ fn get_print_output_ssbo(msg: &str, buffer: GLuint) {
     }
 }
 
+fn make_shader_src(src: &str) -> String {
+    use glsl::parser::Parse;
+    use glsl::syntax::PreprocessorDefine;
+    use glsl::syntax::ShaderStage;
+    use glsl::visitor::{Host, Visit, Visitor};
+
+    let mut stage = ShaderStage::parse(src).unwrap();
+
+    let mut out = String::new();
+    struct MyVisitor {}
+    impl Visitor for MyVisitor {
+        fn visit_preprocessor_define(&mut self, define: &mut PreprocessorDefine) -> Visit {
+            match define {
+                PreprocessorDefine::ObjectLike { ident, value } => {
+                    if ident.as_str() == "DATA_LEN" {
+                        *value = DATA_LEN.to_string();
+                    }
+                    if ident.as_str() == "WORK_GROUPS" {
+                        *value = WORK_GROUPS.to_string();
+                    }
+                }
+                _ => (),
+            };
+
+            Visit::Parent
+        }
+    }
+
+    let mut my_visitor = MyVisitor {};
+    stage.visit(&mut my_visitor);
+
+    glsl::transpiler::glsl::show_translation_unit(&mut out, &stage);
+
+    println!("{}", &out);
+    out
+}
+
+fn load_shader(src: &str) -> Program {
+    {
+        match shader::Shader::from_source(
+            &CString::new(make_shader_src(src)).unwrap(),
+            gl::COMPUTE_SHADER,
+        ) {
+            Ok(cs) => Program::new(vec![(cs, gl::COMPUTE_SHADER)]).unwrap(),
+            Err(msg) => {
+                eprint!("Shader compilation error:\n{}", msg);
+                std::process::exit(1)
+            }
+        }
+    }
+}
+
 fn main() {
     // ************************************************************************
     // setup window and opengl context
@@ -67,30 +131,22 @@ fn main() {
     }
 
     // ************************************************************************
-    // load compute shader
-    let prefix_sum_cs = {
-        match shader::Shader::from_source(
-            &CString::new(include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/shaders/multi_wg_prefix_sum.comp"
-            )))
-            .unwrap(),
-            gl::COMPUTE_SHADER,
-        ) {
-            Ok(cs) => program::Program::new(vec![(cs, gl::COMPUTE_SHADER)]).unwrap(),
-            Err(msg) => {
-                eprint!("Shader compilation error:\n{}", msg);
-                std::process::exit(1);
-            }
-        }
-    };
+    // load compute shaders
+    let multi_wg_prefix_sum1_cs = load_shader(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/shaders/multi_wg_prefix_sum1.comp"
+    )));
 
+    let multi_wg_prefix_sum2_cs = load_shader(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/shaders/multi_wg_prefix_sum2.comp"
+    )));
+
+    // ************************************************************************
+    // create input data
     let mut data = [0.; DATA_LEN];
     for i in 0..data.len() {
         data[i] = i as GLfloat;
-        if i >= DATA_LEN / 2 {
-            data[i] *= -1.;
-        }
     }
     let input_data = InputData { data };
 
@@ -142,19 +198,28 @@ fn main() {
     // ************************************************************************
     // Run compute shader
     get_print_input_ssbo("before:", input_ssbo);
-    // get_print_output_ssbo("before:", output_ssbo);
 
-    // Perform reduce step on a single block
-    prefix_sum_cs.use_();
+    multi_wg_prefix_sum1_cs.use_();
     unsafe {
         gl::DispatchCompute(WORK_GROUPS, 1, 1);
         gl::MemoryBarrier(gl::BUFFER_UPDATE_BARRIER_BIT);
     };
 
-    // https://computergraphics.stackexchange.com/questions/400/synchronizing-successive-opengl-compute-shader-invocations
-    // https://gamedev.stackexchange.com/questions/151563/synchronization-between-several-gldispatchcompute-with-same-ssbos
-    println!();
+    unsafe {
+        gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, output_ssbo);
+        let data = gl::MapBuffer(gl::SHADER_STORAGE_BUFFER, gl::READ_ONLY) as *mut OutputData;
 
-    // get_print_input_ssbo("after:", input_ssbo);
-    get_print_output_ssbo("after:", output_ssbo);
+        inplace_exclusive_prefix_sum(&mut (*data).sums);
+
+        gl::UnmapBuffer(gl::SHADER_STORAGE_BUFFER);
+        gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
+    }
+
+    multi_wg_prefix_sum2_cs.use_();
+    unsafe {
+        gl::DispatchCompute(WORK_GROUPS, 1, 1);
+        gl::MemoryBarrier(gl::BUFFER_UPDATE_BARRIER_BIT);
+    };
+
+    get_print_output_ssbo("\nafter:", output_ssbo);
 }
