@@ -1,14 +1,19 @@
 use gl::types::*;
 
-// use glutin::event::WindowEvent;
+use glsl::parser::Parse;
+use glsl::syntax::PreprocessorDefine;
+use glsl::syntax::ShaderStage;
+use glsl::visitor::{Host, Visit, Visitor};
+
 mod debug_message_callback;
 mod program;
 mod shader;
 mod vertex;
 use program::Program;
+
 use std::ffi::CString;
 
-const DATA_LEN: usize = 8;
+const DATA_LEN: usize = 31;
 const WORK_GROUPS: GLuint = 2;
 
 #[derive(Debug, Clone, Copy)]
@@ -35,41 +40,22 @@ fn inplace_exclusive_prefix_sum(a: &mut [GLfloat; WORK_GROUPS as usize]) {
     }
 }
 
-fn get_print_input_ssbo(msg: &str, buffer: GLuint) {
-    unsafe {
-        gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, buffer);
-        let input_data =
-            gl::MapBuffer(gl::SHADER_STORAGE_BUFFER, gl::READ_ONLY) as *const InputData;
+unsafe fn get_ssbo<T: Clone>(buffer: GLuint) -> T {
+    gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, buffer);
+    let data = gl::MapBuffer(gl::SHADER_STORAGE_BUFFER, gl::READ_ONLY) as *const T;
 
-        println!("{} {:#?}", msg, *input_data);
+    let copy = (*data).clone();
 
-        gl::UnmapBuffer(gl::SHADER_STORAGE_BUFFER);
-        gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
-    }
-}
+    gl::UnmapBuffer(gl::SHADER_STORAGE_BUFFER);
+    gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
 
-fn get_print_output_ssbo(msg: &str, buffer: GLuint) {
-    unsafe {
-        gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, buffer);
-        let output_data =
-            gl::MapBuffer(gl::SHADER_STORAGE_BUFFER, gl::READ_ONLY) as *const OutputData;
-
-        println!("{} {:#?}", msg, *output_data);
-
-        gl::UnmapBuffer(gl::SHADER_STORAGE_BUFFER);
-        gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
-    }
+    copy
 }
 
 fn make_shader_src(src: &str) -> String {
-    use glsl::parser::Parse;
-    use glsl::syntax::PreprocessorDefine;
-    use glsl::syntax::ShaderStage;
-    use glsl::visitor::{Host, Visit, Visitor};
+    let mut shader = ShaderStage::parse(src).unwrap();
 
-    let mut stage = ShaderStage::parse(src).unwrap();
-
-    let mut out = String::new();
+    let mut transformed_source = String::new();
     struct MyVisitor {}
     impl Visitor for MyVisitor {
         fn visit_preprocessor_define(&mut self, define: &mut PreprocessorDefine) -> Visit {
@@ -90,12 +76,11 @@ fn make_shader_src(src: &str) -> String {
     }
 
     let mut my_visitor = MyVisitor {};
-    stage.visit(&mut my_visitor);
+    shader.visit(&mut my_visitor);
 
-    glsl::transpiler::glsl::show_translation_unit(&mut out, &stage);
+    glsl::transpiler::glsl::show_translation_unit(&mut transformed_source, &shader);
 
-    println!("{}", &out);
-    out
+    transformed_source
 }
 
 fn load_shader(src: &str) -> Program {
@@ -111,6 +96,20 @@ fn load_shader(src: &str) -> Program {
             }
         }
     }
+}
+
+fn prefix_sum(data: [GLfloat; DATA_LEN]) -> [GLfloat; DATA_LEN] {
+    let mut a = [0.; DATA_LEN];
+    let mut v = data.to_vec();
+    v.insert(0, 0.0);
+    for i in 1..v.len() {
+        v[i] += v[i - 1];
+    }
+    v.pop();
+    for i in 0..v.len() {
+        a[i] = v[i];
+    }
+    a
 }
 
 fn main() {
@@ -148,6 +147,12 @@ fn main() {
     for i in 0..data.len() {
         data[i] = i as GLfloat;
     }
+
+    // TODO(Andrea): finish
+    // if !DATA_LEN.is_power_of_two() {
+    //     let padding_len = DATA_LEN.next_power_of_two() - DATA_LEN;
+    // }
+
     let input_data = InputData { data };
 
     // ************************************************************************
@@ -196,8 +201,8 @@ fn main() {
     }
 
     // ************************************************************************
-    // Run compute shader
-    get_print_input_ssbo("before:", input_ssbo);
+    // Run compute shaders
+    unsafe { println!("before: {:#?}", get_ssbo::<InputData>(input_ssbo)) };
 
     multi_wg_prefix_sum1_cs.use_();
     unsafe {
@@ -221,5 +226,10 @@ fn main() {
         gl::MemoryBarrier(gl::BUFFER_UPDATE_BARRIER_BIT);
     };
 
-    get_print_output_ssbo("\nafter:", output_ssbo);
+    unsafe {
+        let output_data = get_ssbo::<OutputData>(output_ssbo);
+        println!("\nafter: {:#?}", output_data);
+
+        assert_eq!(output_data.data, prefix_sum(data));
+    }
 }
