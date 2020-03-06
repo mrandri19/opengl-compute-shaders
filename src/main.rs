@@ -124,7 +124,7 @@ fn load_shader(
     }
 }
 
-fn prefix_sum(data: Vec<GLuint>) -> Vec<GLuint> {
+fn _prefix_sum(data: Vec<GLuint>) -> Vec<GLuint> {
     let mut v = data.clone();
     v.insert(0, 0);
     for i in 1..v.len() {
@@ -134,7 +134,7 @@ fn prefix_sum(data: Vec<GLuint>) -> Vec<GLuint> {
     v
 }
 
-fn print_input_data(input_data: &Vec<GLuint>, n: usize, chunk_size: usize) {
+fn print_input_data(input_data: &Vec<GLuint>, _n: usize, chunk_size: usize) {
     println!("************* input_data ************* ");
     println!("uint chunk[CHUNK_SIZE]:");
     for y in 0..8 {
@@ -144,7 +144,7 @@ fn print_input_data(input_data: &Vec<GLuint>, n: usize, chunk_size: usize) {
         println!();
     }
     println!(
-        "uvec4 ray_start[N]:\n{:?}",
+        "uvec4 ray_start:\n{:?}",
         &input_data[chunk_size..(chunk_size + 4)]
     );
 }
@@ -196,45 +196,34 @@ fn main() {
     }
 
     // ************************************************************************
-    // create input data
-    let original_n: usize = 32;
-    let b = 8;
+    // Parameters
+    let n: usize = 8; // total number of rays
+    let b = 2; // how many rays per workgroup
+    let n_over_b = n / b; // how many workgroups
 
-    let ray_start: Vec<GLuint> = vec![0; 4];
-
-    // ************************************************************************
-    // calculate the necessary padding and pad the input data accordingly
-    let padding_len = {
-        if !original_n.is_power_of_two() {
-            original_n.next_power_of_two() - original_n
-        } else {
-            0
-        }
-    };
-
-    // FIXME: not sure about this
-    let n = original_n + padding_len;
-    let n_over_b = n / b;
     let chunk_rows = 8;
     let chunk_cols = 8;
     let chunk_size = chunk_rows * chunk_cols;
 
+    // ************************************************************************
+    // Create chunk data
     let mut input_data = vec![0; chunk_size];
-    for y in 0..chunk_rows {
+    for y in 0..4 {
         for x in 0..chunk_cols {
-            if x == (chunk_cols - 1) {
-                input_data[y * chunk_rows + x] = 1;
+            if x == 7 {
+                input_data[y * chunk_cols + x] = 1;
             }
         }
     }
 
-    input_data.append(&mut ray_start.clone());
-    input_data.append(&mut vec![0; padding_len]);
+    // ************************************************************************
+    // Add ray_start
+    input_data.append(&mut vec![0; 4]);
 
     // ************************************************************************
     // load the compute shaders, setting the length of input and number of work
     // groups
-    let multi_wg_prefix_sum1_cs = load_shader(
+    let kernel_1 = load_shader(
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/shaders/multi_wg_raycasting/multi_wg_raycasting1.comp"
@@ -246,7 +235,7 @@ fn main() {
         chunk_cols,
     );
 
-    let multi_wg_prefix_sum2_cs = load_shader(
+    let kernel_2 = load_shader(
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/shaders/multi_wg_raycasting/multi_wg_raycasting2.comp"
@@ -325,7 +314,7 @@ fn main() {
     // Run compute shaders
     unsafe { print_input_data(&get_ssbo_copy(input_ssbo, input_data_size), n, chunk_size) };
 
-    multi_wg_prefix_sum1_cs.use_();
+    kernel_1.use_();
     unsafe {
         gl::DispatchCompute(n_over_b as GLuint, 1, 1);
         gl::MemoryBarrier(gl::BUFFER_UPDATE_BARRIER_BIT);
@@ -348,7 +337,7 @@ fn main() {
         gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
     }
 
-    multi_wg_prefix_sum2_cs.use_();
+    kernel_2.use_();
     unsafe {
         gl::DispatchCompute(n_over_b as GLuint, 1, 1);
         gl::MemoryBarrier(gl::BUFFER_UPDATE_BARRIER_BIT);
@@ -356,13 +345,6 @@ fn main() {
 
     unsafe {
         let output_data = get_ssbo_copy(output_ssbo, output_data_size);
-
         print_output_data(&output_data, n, b, n_over_b);
-
-        // let s = prefix_sum(ray_start.iter().map(|n| (n % 2 == 0) as GLuint).collect());
-
-        // for i in 0..original_n {
-        //     assert_eq!(output_data[n_over_b + i], s[i]);
-        // }
     }
 }
