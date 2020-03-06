@@ -2,6 +2,9 @@
 // https://developer.nvidia.com/gpugems/gpugems3/part-vi-gpu-computing/chapter-39-parallel-prefix-sum-scan-cuda
 #version 450 core
 
+#define CHUNK_X -1337
+#define CHUNK_Y -1337
+#define CHUNK_Z -1337
 #define CHUNK_SIZE -1337
 #define N -1337
 #define B -1337

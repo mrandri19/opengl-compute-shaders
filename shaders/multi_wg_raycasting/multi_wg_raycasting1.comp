@@ -2,8 +2,9 @@
 // https://developer.nvidia.com/gpugems/gpugems3/part-vi-gpu-computing/chapter-39-parallel-prefix-sum-scan-cuda
 #version 450 core
 
-#define CHUNK_ROWS -1337
-#define CHUNK_COLS -1337
+#define CHUNK_X -1337
+#define CHUNK_Y -1337
+#define CHUNK_Z -1337
 #define CHUNK_SIZE -1337
 #define N -1337
 #define B -1337
@@ -121,39 +122,52 @@ void prefix_sum(inout uint sums[N_OVER_B], uint T) {
 shared bool has_hit[B];
 shared uint offsets[B];
 
-uvec4 raycast(uvec4 ray_start_, vec4 ray_direction_, out bool has_hit,
+uvec4 raycast(vec3 ray_start, vec3 ray_direction_, out bool has_hit,
               in uint chunk[CHUNK_SIZE]) {
-  vec2 ray_start = vec2(ray_start_);
-  vec2 ray_direction = normalize(vec2(1.0, 0.0) + vec2(1e-8, 1e-8));
-  vec2 ray_voxel = floor(ray_start);
-  vec2 step = sign(ray_direction);
+  vec3 ray_direction = normalize(ray_direction_ + vec3(1e-8, 1e-8, 1e-8));
+  vec3 ray_voxel = floor(ray_start);
+  vec3 step = sign(ray_direction);
 
-  vec2 t_max = ((ray_voxel + step) - ray_start) / (ray_direction);
+  vec3 t_max = ((ray_voxel + step) - ray_start) / (ray_direction);
 
-  vec2 t_delta = (vec2(1., 1.) / ray_direction) * step;
+  vec3 t_delta = (vec3(1., 1., 1.) / ray_direction) * step;
 
   has_hit = false;
   for (int i = 0; i < MAX_ITERS; i++) {
     if (t_max.x < t_max.y) {
-      ray_voxel.x += step.x;
-      t_max.x += t_delta.x;
+      if (t_max.x < t_max.z) {
+        ray_voxel.x += step.x;
+        t_max.x += t_delta.x;
+      } else {
+        ray_voxel.z += step.z;
+        t_max.z += t_delta.z;
+      }
     } else {
-      ray_voxel.y += step.y;
-      t_max.y += t_delta.y;
+      if (t_max.y < t_max.z) {
+        ray_voxel.y += step.y;
+        t_max.y += t_delta.y;
+      } else {
+        ray_voxel.z += step.z;
+        t_max.z += t_delta.z;
+      }
     }
     float x = ray_voxel.x;
     float y = ray_voxel.y;
+    float z = ray_voxel.z;
 
-    if (x >= CHUNK_COLS)
+    if (x >= CHUNK_X)
       break;
-    if (y >= CHUNK_ROWS)
+    if (y >= CHUNK_Y)
+      break;
+    if (z >= CHUNK_Z)
       break;
 
     int x_ = int(x);
     int y_ = int(y);
-    if (input_data.chunk[CHUNK_COLS * y_ + x_] == 1) {
+    int z_ = int(z);
+    if (input_data.chunk[CHUNK_X * y_ + x_] == 1) {
       has_hit = true;
-      return uvec4(x_, y_, 0, 0);
+      return uvec4(x_, y_, z_, 0);
     }
   }
 
@@ -167,14 +181,16 @@ void main() {
   uint ix0 = (W * B) + (2 * T);
   uint ix1 = (W * B) + (2 * T + 1);
 
-  vec4 ray_direction = vec4(1., 0., 0., 0.);
+  vec3 ray_start = vec3(0., 4., 4.);
+  vec3 ray_direction0 =
+      vec3(4., 0., 0.) + ix0 * vec3(0., 1., 0.) + 0 * vec3(0., 0., 1.);
+  vec3 ray_direction1 =
+      vec3(4., 0., 0.) + ix1 * vec3(0., 1., 0.) + 0 * vec3(0., 0., 1.);
 
   output_data.hits[ix0] =
-      raycast(input_data.ray_start + uvec4(0, ix0, 0, 0), ray_direction,
-              has_hit[2 * T], input_data.chunk);
+      raycast(ray_start, ray_direction0, has_hit[2 * T], input_data.chunk);
   output_data.hits[ix1] =
-      raycast(input_data.ray_start + uvec4(0, ix1, 0, 0), ray_direction,
-              has_hit[2 * T + 1], input_data.chunk);
+      raycast(ray_start, ray_direction1, has_hit[2 * T + 1], input_data.chunk);
   barrier();
   memoryBarrier();
 

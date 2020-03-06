@@ -11,6 +11,7 @@ mod shader;
 mod vertex;
 use program::Program;
 
+use std::collections::HashMap;
 use std::ffi::CString;
 use std::mem::size_of;
 
@@ -40,42 +41,34 @@ unsafe fn get_ssbo_copy(buffer: GLuint, len: usize) -> Vec<GLuint> {
     copy
 }
 
-fn make_shader_src(
-    src: &str,
-    n: usize,
-    b: usize,
-    chunk_size: usize,
-    chunk_rows: usize,
-    chunk_cols: usize,
-) -> String {
+fn make_shader_src<'a>(src: &str, substs: &HashMap<&'a str, usize>) -> String {
     let mut shader = ShaderStage::parse(src).unwrap();
 
     let mut transformed_source = String::new();
-    struct MyVisitor {
-        n: usize,
-        b: usize,
-        chunk_size: usize,
-        chunk_rows: usize,
-        chunk_cols: usize,
+    struct MyVisitor<'a> {
+        substs: &'a HashMap<&'a str, usize>,
     }
-    impl Visitor for MyVisitor {
+    impl<'a> Visitor for MyVisitor<'a> {
         fn visit_preprocessor_define(&mut self, define: &mut PreprocessorDefine) -> Visit {
             match define {
                 PreprocessorDefine::ObjectLike { ident, value } => {
                     if ident.as_str() == "N" {
-                        *value = self.n.to_string();
+                        *value = self.substs["n"].to_string();
                     }
                     if ident.as_str() == "B" {
-                        *value = self.b.to_string();
+                        *value = self.substs["b"].to_string();
                     }
                     if ident.as_str() == "CHUNK_SIZE" {
-                        *value = self.chunk_size.to_string();
+                        *value = self.substs["chunk_size"].to_string();
                     }
-                    if ident.as_str() == "CHUNK_ROWS" {
-                        *value = self.chunk_rows.to_string();
+                    if ident.as_str() == "CHUNK_X" {
+                        *value = self.substs["chunk_y"].to_string();
                     }
-                    if ident.as_str() == "CHUNK_COLS" {
-                        *value = self.chunk_cols.to_string();
+                    if ident.as_str() == "CHUNK_Y" {
+                        *value = self.substs["chunk_y"].to_string();
+                    }
+                    if ident.as_str() == "CHUNK_Z" {
+                        *value = self.substs["chunk_z"].to_string();
                     }
                 }
                 _ => (),
@@ -85,13 +78,7 @@ fn make_shader_src(
         }
     }
 
-    let mut my_visitor = MyVisitor {
-        n,
-        b,
-        chunk_size,
-        chunk_rows,
-        chunk_cols,
-    };
+    let mut my_visitor = MyVisitor { substs };
     shader.visit(&mut my_visitor);
 
     glsl::transpiler::glsl::show_translation_unit(&mut transformed_source, &shader);
@@ -99,20 +86,10 @@ fn make_shader_src(
     transformed_source
 }
 
-fn load_shader(
-    src: &str,
-    n: usize,
-    b: usize,
-    chunk_size: usize,
-    chunk_rows: usize,
-    chunk_cols: usize,
-) -> Program {
+fn load_shader(src: &str, substs: &HashMap<&str, usize>) -> Program {
     {
         match shader::Shader::from_source(
-            &CString::new(make_shader_src(
-                src, n, b, chunk_size, chunk_rows, chunk_cols,
-            ))
-            .unwrap(),
+            &CString::new(make_shader_src(src, &substs)).unwrap(),
             gl::COMPUTE_SHADER,
         ) {
             Ok(cs) => Program::new(vec![(cs, gl::COMPUTE_SHADER)]).unwrap(),
@@ -137,9 +114,12 @@ fn _prefix_sum(data: Vec<GLuint>) -> Vec<GLuint> {
 fn print_input_data(input_data: &Vec<GLuint>, _n: usize, chunk_size: usize) {
     println!("************* input_data ************* ");
     println!("uint chunk[CHUNK_SIZE]:");
-    for y in 0..8 {
-        for x in 0..8 {
-            print!("{:2}", &input_data[y * 8 + x]);
+    for z in 0..8 {
+        for y in 0..8 {
+            for x in 0..8 {
+                print!("{:2}", &input_data[z * 8 * 8 + y * 8 + x]);
+            }
+            println!();
         }
         println!();
     }
@@ -172,7 +152,7 @@ fn print_output_data(output_data: &Vec<GLuint>, n: usize, _b: usize, n_over_b: u
     println!(
         "uvec4 compact_hits[N]:\n{:?}",
         (&output_data
-            [(n_over_b + n + n + 1 * 4 + 4 * n)..(n_over_b + n + n + 1 * 4 + 4 * n + 4 * n)])
+            [(n_over_b + n + n + 1 * 4 + 4 * n)..(n_over_b + n + n + 1 * 4 + 4 * n + 4 * length)])
             .chunks(4)
             .collect::<Vec<_>>()
     );
@@ -197,21 +177,33 @@ fn main() {
 
     // ************************************************************************
     // Parameters
-    let n: usize = 8; // total number of rays
-    let b = 2; // how many rays per workgroup
+    let original_n: usize = 310; // total number of rays
+
+    let n = if !original_n.is_power_of_two() {
+        original_n.next_power_of_two()
+    } else {
+        original_n
+    };
+
+    let b = 8; // how many rays per workgroup
     let n_over_b = n / b; // how many workgroups
 
-    let chunk_rows = 8;
-    let chunk_cols = 8;
-    let chunk_size = chunk_rows * chunk_cols;
+    assert!(n_over_b.is_power_of_two());
+
+    let chunk_x = 8;
+    let chunk_y = 8;
+    let chunk_z = 8;
+    let chunk_size = chunk_x * chunk_y * chunk_z;
 
     // ************************************************************************
     // Create chunk data
     let mut input_data = vec![0; chunk_size];
-    for y in 0..4 {
-        for x in 0..chunk_cols {
-            if x == 7 {
-                input_data[y * chunk_cols + x] = 1;
+    for z in 0..chunk_z {
+        for y in 0..chunk_z {
+            for x in 0..chunk_x {
+                if x == 4 {
+                    input_data[z * chunk_z * chunk_x + y * chunk_x + x] = 1;
+                }
             }
         }
     }
@@ -223,16 +215,19 @@ fn main() {
     // ************************************************************************
     // load the compute shaders, setting the length of input and number of work
     // groups
+    let mut substs = std::collections::HashMap::new();
+    substs.insert("n", n);
+    substs.insert("b", b);
+    substs.insert("chunk_size", chunk_size);
+    substs.insert("chunk_x", chunk_x);
+    substs.insert("chunk_y", chunk_y);
+    substs.insert("chunk_z", chunk_z);
     let kernel_1 = load_shader(
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/shaders/multi_wg_raycasting/multi_wg_raycasting1.comp"
         )),
-        n,
-        b,
-        chunk_size,
-        chunk_rows,
-        chunk_cols,
+        &substs,
     );
 
     let kernel_2 = load_shader(
@@ -240,11 +235,7 @@ fn main() {
             env!("CARGO_MANIFEST_DIR"),
             "/shaders/multi_wg_raycasting/multi_wg_raycasting2.comp"
         )),
-        n,
-        b,
-        chunk_size,
-        chunk_rows,
-        chunk_cols,
+        &substs,
     );
 
     // ************************************************************************
