@@ -40,13 +40,23 @@ unsafe fn get_ssbo_copy(buffer: GLuint, len: usize) -> Vec<GLuint> {
     copy
 }
 
-fn make_shader_src(src: &str, n: usize, b: usize) -> String {
+fn make_shader_src(
+    src: &str,
+    n: usize,
+    b: usize,
+    chunk_size: usize,
+    chunk_rows: usize,
+    chunk_cols: usize,
+) -> String {
     let mut shader = ShaderStage::parse(src).unwrap();
 
     let mut transformed_source = String::new();
     struct MyVisitor {
         n: usize,
         b: usize,
+        chunk_size: usize,
+        chunk_rows: usize,
+        chunk_cols: usize,
     }
     impl Visitor for MyVisitor {
         fn visit_preprocessor_define(&mut self, define: &mut PreprocessorDefine) -> Visit {
@@ -58,6 +68,15 @@ fn make_shader_src(src: &str, n: usize, b: usize) -> String {
                     if ident.as_str() == "B" {
                         *value = self.b.to_string();
                     }
+                    if ident.as_str() == "CHUNK_SIZE" {
+                        *value = self.chunk_size.to_string();
+                    }
+                    if ident.as_str() == "CHUNK_ROWS" {
+                        *value = self.chunk_rows.to_string();
+                    }
+                    if ident.as_str() == "CHUNK_COLS" {
+                        *value = self.chunk_cols.to_string();
+                    }
                 }
                 _ => (),
             };
@@ -66,7 +85,13 @@ fn make_shader_src(src: &str, n: usize, b: usize) -> String {
         }
     }
 
-    let mut my_visitor = MyVisitor { n, b };
+    let mut my_visitor = MyVisitor {
+        n,
+        b,
+        chunk_size,
+        chunk_rows,
+        chunk_cols,
+    };
     shader.visit(&mut my_visitor);
 
     glsl::transpiler::glsl::show_translation_unit(&mut transformed_source, &shader);
@@ -74,10 +99,20 @@ fn make_shader_src(src: &str, n: usize, b: usize) -> String {
     transformed_source
 }
 
-fn load_shader(src: &str, n: usize, b: usize) -> Program {
+fn load_shader(
+    src: &str,
+    n: usize,
+    b: usize,
+    chunk_size: usize,
+    chunk_rows: usize,
+    chunk_cols: usize,
+) -> Program {
     {
         match shader::Shader::from_source(
-            &CString::new(make_shader_src(src, n, b)).unwrap(),
+            &CString::new(make_shader_src(
+                src, n, b, chunk_size, chunk_rows, chunk_cols,
+            ))
+            .unwrap(),
             gl::COMPUTE_SHADER,
         ) {
             Ok(cs) => Program::new(vec![(cs, gl::COMPUTE_SHADER)]).unwrap(),
@@ -99,6 +134,50 @@ fn prefix_sum(data: Vec<GLuint>) -> Vec<GLuint> {
     v
 }
 
+fn print_input_data(input_data: &Vec<GLuint>, n: usize, chunk_size: usize) {
+    println!("************* input_data ************* ");
+    println!("uint chunk[CHUNK_SIZE]:");
+    for y in 0..8 {
+        for x in 0..8 {
+            print!("{:2}", &input_data[y * 8 + x]);
+        }
+        println!();
+    }
+    println!(
+        "uvec4 ray_start[N]:\n{:?}",
+        &input_data[chunk_size..(chunk_size + 4)]
+    );
+}
+
+fn print_output_data(output_data: &Vec<GLuint>, n: usize, _b: usize, n_over_b: usize) {
+    println!();
+    println!("************* output_data ************* ");
+    println!("uint sums[N_OVER_B]:\n{:?}", &output_data[0..n_over_b]);
+    println!(
+        "uint offsets[N]:\n{:?}",
+        &output_data[n_over_b..(n_over_b + n)]
+    );
+    println!(
+        "uint has_hit[N]:\n{:?}",
+        &output_data[(n_over_b + n)..(n_over_b + n + n)]
+    );
+    let length = output_data[(n_over_b + n + n)..(n_over_b + n + n + 1)][0] as usize;
+    println!("uint length:\n{:?}", length);
+    println!(
+        "uvec4 hits[N]:\n{:?}",
+        (&output_data[(n_over_b + n + n + 1 * 4)..(n_over_b + n + n + 1 * 4 + 4 * n)])
+            .chunks(4)
+            .collect::<Vec<_>>()
+    );
+    println!(
+        "uvec4 compact_hits[N]:\n{:?}",
+        (&output_data
+            [(n_over_b + n + n + 1 * 4 + 4 * n)..(n_over_b + n + n + 1 * 4 + 4 * n + 4 * n)])
+            .chunks(4)
+            .collect::<Vec<_>>()
+    );
+}
+
 fn main() {
     // ************************************************************************
     // setup window and opengl context
@@ -118,17 +197,10 @@ fn main() {
 
     // ************************************************************************
     // create input data
-    let original_n: usize = 100_000;
-    let b = 128;
+    let original_n: usize = 32;
+    let b = 8;
 
-    use rand::{rngs::StdRng, Rng, SeedableRng};
-    let mut rng: StdRng = SeedableRng::from_seed([0; 32]);
-
-    let mut original_data: Vec<GLuint> = vec![0; original_n];
-    for i in 0..original_data.len() {
-        original_data[i] = rng.gen_range(0, 20);
-        // original_data[i] = i as GLuint;
-    }
+    let ray_start: Vec<GLuint> = vec![0; 4];
 
     // ************************************************************************
     // calculate the necessary padding and pad the input data accordingly
@@ -140,10 +212,23 @@ fn main() {
         }
     };
 
+    // FIXME: not sure about this
     let n = original_n + padding_len;
     let n_over_b = n / b;
+    let chunk_rows = 8;
+    let chunk_cols = 8;
+    let chunk_size = chunk_rows * chunk_cols;
 
-    let mut input_data = original_data.clone();
+    let mut input_data = vec![0; chunk_size];
+    for y in 0..chunk_rows {
+        for x in 0..chunk_cols {
+            if x == (chunk_cols - 1) {
+                input_data[y * chunk_rows + x] = 1;
+            }
+        }
+    }
+
+    input_data.append(&mut ray_start.clone());
     input_data.append(&mut vec![0; padding_len]);
 
     // ************************************************************************
@@ -152,31 +237,44 @@ fn main() {
     let multi_wg_prefix_sum1_cs = load_shader(
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/shaders/multi_wg_prefix_sum_uint/multi_wg_prefix_sum1.comp"
+            "/shaders/multi_wg_raycasting/multi_wg_raycasting1.comp"
         )),
         n,
         b,
+        chunk_size,
+        chunk_rows,
+        chunk_cols,
     );
 
     let multi_wg_prefix_sum2_cs = load_shader(
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/shaders/multi_wg_prefix_sum_uint/multi_wg_prefix_sum2.comp"
+            "/shaders/multi_wg_raycasting/multi_wg_raycasting2.comp"
         )),
         n,
         b,
+        chunk_size,
+        chunk_rows,
+        chunk_cols,
     );
 
     // ************************************************************************
     // create input, output SSBOs and load input data into input SSBO
     let mut input_ssbo = 0;
     let input_index_binding_point = 0;
+    let input_data_size = chunk_size + 4;
     unsafe {
         gl::GenBuffers(1, &mut input_ssbo);
         gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, input_ssbo);
+
+        // layout(std430, binding = 0) coherent buffer InputData {
+        //   uint chunk[CHUNK_SIZE];
+        //   uvec4 ray_start;
+        // }
+        // input_data;
         gl::BufferData(
             gl::SHADER_STORAGE_BUFFER,
-            (n * size_of::<GLuint>()) as GLsizeiptr,
+            (input_data_size * size_of::<GLuint>()) as GLsizeiptr,
             input_data.as_ptr() as *const std::ffi::c_void,
             gl::DYNAMIC_READ,
         );
@@ -192,7 +290,8 @@ fn main() {
 
     let mut output_ssbo = 0;
     let output_index_binding_point = 1;
-    let output_data_size = n_over_b + n + n + 1 + n;
+    // 1 (uint) * 4 because of alignment to the biggest element which is a uvec4 (16B)
+    let output_data_size = n_over_b + n + n + 1 * 4 + 4 * n + 4 * n;
     unsafe {
         gl::GenBuffers(1, &mut output_ssbo);
         gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, output_ssbo);
@@ -202,9 +301,10 @@ fn main() {
         //   uint offsets[N];
         //   uint results[N];
         //   uint length;
-        //   uint data[N];
+        //   vec4 hits[N];
+        //   bool has_hit[N];
         // }
-        // output_data
+        // output_data;
         gl::BufferData(
             gl::SHADER_STORAGE_BUFFER,
             (output_data_size * size_of::<GLuint>()) as GLsizeiptr,
@@ -223,7 +323,7 @@ fn main() {
 
     // ************************************************************************
     // Run compute shaders
-    // unsafe { println!("before: {:?}", get_ssbo_copy(input_ssbo, n)) };
+    unsafe { print_input_data(&get_ssbo_copy(input_ssbo, input_data_size), n, chunk_size) };
 
     multi_wg_prefix_sum1_cs.use_();
     unsafe {
@@ -231,10 +331,10 @@ fn main() {
         gl::MemoryBarrier(gl::BUFFER_UPDATE_BARRIER_BIT);
     };
 
-    // TODO(Andrea): this moves the SSBO from device memory to device-host-shared
+    // TODO: this moves the SSBO from device memory to device-host-shared
     // memory
 
-    // TODO(Andrea): What about std430 alignment??
+    // TODO: What about std430 alignment??
     // https://www.khronos.org/registry/OpenGL/specs/gl/glspec45.core.pdf#page=159
     unsafe {
         gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, output_ssbo);
@@ -257,32 +357,12 @@ fn main() {
     unsafe {
         let output_data = get_ssbo_copy(output_ssbo, output_data_size);
 
-        // println!("\nafter\nsums: {:?}", &output_data[0..n_over_b]);
-        // println!("offsets: {:?}", &output_data[n_over_b..(n_over_b + n)]);
-        // println!(
-        //     "results: {:?}",
-        //     &output_data[(n_over_b + n)..(n_over_b + n + n)]
-        // );
-        let length = output_data[(n_over_b + n + n)..(n_over_b + n + n + 1)][0] as usize;
-        // println!("length: {:?}", length);
-        // println!(
-        //     "data: {:?}",
-        //     &output_data[(n_over_b + n + n + 1)..(n_over_b + n + n + 1 + n)]
-        // );
-        println!(
-            "data: {:?}",
-            &output_data[(n_over_b + n + n + 1)..(n_over_b + n + n + 1 + length)]
-        );
+        print_output_data(&output_data, n, b, n_over_b);
 
-        let s = prefix_sum(
-            original_data
-                .iter()
-                .map(|n| (n % 2 == 0) as GLuint)
-                .collect(),
-        );
+        // let s = prefix_sum(ray_start.iter().map(|n| (n % 2 == 0) as GLuint).collect());
 
-        for i in 0..original_n {
-            assert_eq!(output_data[n_over_b + i], s[i]);
-        }
+        // for i in 0..original_n {
+        //     assert_eq!(output_data[n_over_b + i], s[i]);
+        // }
     }
 }
