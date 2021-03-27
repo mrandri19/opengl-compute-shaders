@@ -18,19 +18,6 @@ mod tests {
     const DATA_LEN: usize = 32;
     const RELATIVE_TOLERANCE: f32 = 1e-8;
 
-    #[derive(Debug, Copy, Clone)]
-    #[repr(C, packed)]
-    struct InputData {
-        data: [GLfloat; DATA_LEN],
-    }
-
-    #[derive(Debug, Copy, Clone)]
-    #[repr(C, packed)]
-    struct OutputData {
-        length: GLuint,
-        data: [GLfloat; DATA_LEN],
-    }
-
     fn make_opengl_window() -> glfw::Window {
         let mut glfw = glfw::init(glfw::FAIL_ON_ERRORS).unwrap();
         glfw.window_hint(glfw::WindowHint::Visible(false));
@@ -73,6 +60,19 @@ mod tests {
 
     #[test]
     fn test_single_wg_prefix_sum() {
+        #[derive(Debug, Copy, Clone)]
+        #[repr(C, packed)]
+        struct InputData {
+            data: [GLfloat; DATA_LEN],
+        }
+
+        #[derive(Debug, Copy, Clone)]
+        #[repr(C, packed)]
+        struct OutputData {
+            length: GLuint,
+            data: [GLfloat; DATA_LEN],
+        }
+
         // *************************************************************************
         // Create OpenGL Context
         let _window = make_opengl_window();
@@ -145,10 +145,22 @@ mod tests {
 
     #[test]
     fn test_single_wg_compaction() {
+        #[derive(Debug, Copy, Clone)]
+        #[repr(C, packed)]
+        struct InputData {
+            data: [GLfloat; DATA_LEN],
+        }
+
+        #[derive(Debug, Copy, Clone)]
+        #[repr(C, packed)]
+        struct OutputData {
+            length: GLuint,
+            data: [GLfloat; DATA_LEN],
+        }
+
         // *************************************************************************
         // Create OpenGL Context
         let _window = make_opengl_window();
-        println!("[daw] created window");
 
         // *************************************************************************
         // Load shader and create program
@@ -227,6 +239,123 @@ mod tests {
 
         unsafe {
             gl::DispatchCompute(1, 1, 1);
+            gl::MemoryBarrier(gl::BUFFER_UPDATE_BARRIER_BIT);
+        };
+
+        // *************************************************************************
+        // Check expected result matches with output
+        let output_struct = get_ssbo::<OutputData>(output_ssbo);
+
+        for i in 0..DATA_LEN {
+            let output_value = output_struct.data[i];
+            assert!((expected[i] - output_value).abs() <= (RELATIVE_TOLERANCE * output_value));
+        }
+
+        // *************************************************************************
+        // Cleanup
+        unsafe { gl::DeleteBuffers(1, &input_ssbo) };
+    }
+
+    #[test]
+    fn test_multiple_wg_prefix_sum() {
+        const WORK_GROUPS: usize = 2;
+
+        #[derive(Debug, Copy, Clone)]
+        #[repr(C, packed)]
+        struct InputData {
+            data: [GLfloat; DATA_LEN],
+        }
+
+        #[derive(Debug, Copy, Clone)]
+        #[repr(C, packed)]
+        struct OutputData {
+            sums: [GLfloat; WORK_GROUPS],
+            data: [GLfloat; DATA_LEN],
+        }
+
+        // *************************************************************************
+        // Create OpenGL Context
+        let _window = make_opengl_window();
+
+        // *************************************************************************
+        // Load shader and create program
+        let program1 = make_compute_shader_program(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/shaders/multi_wg_prefix_sum/multi_wg_prefix_sum1.comp.glsl"
+        )));
+        let program2 = make_compute_shader_program(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/shaders/multi_wg_prefix_sum/multi_wg_prefix_sum2.comp.glsl"
+        )));
+
+        // *************************************************************************
+        // Create random data
+        let input_data = InputData {
+            data: [1.0; DATA_LEN],
+        };
+
+        // *************************************************************************
+        // Calculate expected result
+        let mut expected = [0.0; DATA_LEN];
+        for i in 1..DATA_LEN {
+            expected[i] += expected[i - 1] + input_data.data[i];
+        }
+
+        // *************************************************************************
+        // Create input and output SSBOs
+        let mut input_ssbo = 0;
+        let input_index_binding_point = 0;
+        unsafe {
+            gl::GenBuffers(1, &mut input_ssbo);
+            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, input_ssbo);
+            gl::NamedBufferData(
+                input_ssbo,
+                std::mem::size_of::<InputData>() as GLsizeiptr,
+                std::mem::transmute(&input_data),
+                gl::DYNAMIC_READ,
+            );
+
+            gl::BindBufferBase(
+                gl::SHADER_STORAGE_BUFFER,
+                input_index_binding_point,
+                input_ssbo,
+            );
+
+            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
+        }
+
+        let mut output_ssbo = 0;
+        let output_index_binding_point = 1;
+        unsafe {
+            gl::GenBuffers(1, &mut output_ssbo);
+            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, output_ssbo);
+            gl::BufferData(
+                gl::SHADER_STORAGE_BUFFER,
+                std::mem::size_of::<OutputData>() as GLsizeiptr,
+                std::ptr::null() as *const GLvoid,
+                gl::DYNAMIC_READ,
+            );
+
+            gl::BindBufferBase(
+                gl::SHADER_STORAGE_BUFFER,
+                output_index_binding_point,
+                output_ssbo,
+            );
+
+            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
+        }
+
+        // *************************************************************************
+        // Run compute shader
+        program1.use_();
+        unsafe {
+            gl::DispatchCompute(WORK_GROUPS as GLuint, 1, 1);
+            gl::MemoryBarrier(gl::BUFFER_UPDATE_BARRIER_BIT);
+        };
+
+        program2.use_();
+        unsafe {
+            gl::DispatchCompute(WORK_GROUPS as GLuint, 1, 1);
             gl::MemoryBarrier(gl::BUFFER_UPDATE_BARRIER_BIT);
         };
 
