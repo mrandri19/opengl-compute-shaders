@@ -16,6 +16,7 @@ mod tests {
     use crate::shader;
 
     const DATA_LEN: usize = 32;
+    const RELATIVE_TOLERANCE: f32 = 1e-8;
 
     #[derive(Debug, Copy, Clone)]
     #[repr(C, packed)]
@@ -26,6 +27,7 @@ mod tests {
     #[derive(Debug, Copy, Clone)]
     #[repr(C, packed)]
     struct OutputData {
+        length: GLuint,
         data: [GLfloat; DATA_LEN],
     }
 
@@ -57,25 +59,23 @@ mod tests {
         Program::new(vec![(kernel, gl::COMPUTE_SHADER)]).unwrap()
     }
 
-    fn get_ssbo(buffer: GLuint) -> Vec<f32> {
+    fn get_ssbo<T: Clone>(buffer: GLuint) -> T {
         unsafe {
             gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, buffer);
-            let input_data =
-                gl::MapBuffer(gl::SHADER_STORAGE_BUFFER, gl::READ_ONLY) as *const InputData;
+            let input_data = gl::MapBuffer(gl::SHADER_STORAGE_BUFFER, gl::READ_ONLY) as *const T;
 
             gl::UnmapBuffer(gl::SHADER_STORAGE_BUFFER);
             gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
 
-            return (*input_data).data.to_vec();
+            return (*input_data).clone();
         }
     }
 
     #[test]
-    fn test_prefix_sum() {
+    fn test_single_wg_prefix_sum() {
         // *************************************************************************
         // Create OpenGL Context
         let _window = make_opengl_window();
-        println!("[prefix_sum] created window");
 
         // *************************************************************************
         // Load shader and create program
@@ -132,9 +132,10 @@ mod tests {
         // *************************************************************************
         // Check expected result matches with output
 
-        let result = get_ssbo(input_ssbo);
+        let result = get_ssbo::<InputData>(input_ssbo);
         for i in 0..DATA_LEN {
-            assert_eq!(expected[i], result[i]);
+            let result_value = result.data[i];
+            assert_eq!(expected[i], result_value);
         }
 
         // *************************************************************************
@@ -143,7 +144,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daw() {
+    fn test_single_wg_compaction() {
         // *************************************************************************
         // Create OpenGL Context
         let _window = make_opengl_window();
@@ -153,20 +154,27 @@ mod tests {
         // Load shader and create program
         let program = make_compute_shader_program(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/shaders/single_wg_prefix_sum/prefix_sum.comp.glsl"
+            "/shaders/single_wg_compaction/compaction.comp.glsl"
         )));
 
         // *************************************************************************
         // Create random data
         let input_data = InputData {
-            data: [1.0; DATA_LEN],
+            data: {
+                let mut data = [0.0; DATA_LEN];
+                for i in 0..DATA_LEN {
+                    data[i] = i as GLfloat + 1.0;
+                }
+                data
+            },
         };
 
         // *************************************************************************
         // Calculate expected result
+
         let mut expected = [0.0; DATA_LEN];
-        for i in 1..DATA_LEN {
-            expected[i] += expected[i - 1] + input_data.data[i];
+        for i in 0..(DATA_LEN / 2) {
+            expected[i] = 2.0 * (i + 1) as GLfloat;
         }
 
         // *************************************************************************
@@ -192,6 +200,27 @@ mod tests {
             gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
         }
 
+        let mut output_ssbo = 0;
+        let output_index_binding_point = 1;
+        unsafe {
+            gl::GenBuffers(1, &mut output_ssbo);
+            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, output_ssbo);
+            gl::BufferData(
+                gl::SHADER_STORAGE_BUFFER,
+                std::mem::size_of::<OutputData>() as GLsizeiptr,
+                std::ptr::null() as *const GLvoid,
+                gl::DYNAMIC_READ,
+            );
+
+            gl::BindBufferBase(
+                gl::SHADER_STORAGE_BUFFER,
+                output_index_binding_point,
+                output_ssbo,
+            );
+
+            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
+        }
+
         // *************************************************************************
         // Run compute shader
         program.use_();
@@ -203,9 +232,11 @@ mod tests {
 
         // *************************************************************************
         // Check expected result matches with output
-        let result = get_ssbo(input_ssbo);
+        let output_struct = get_ssbo::<OutputData>(output_ssbo);
+
         for i in 0..DATA_LEN {
-            assert_eq!(expected[i], result[i]);
+            let output_value = output_struct.data[i];
+            assert!((expected[i] - output_value).abs() <= (RELATIVE_TOLERANCE * output_value));
         }
 
         // *************************************************************************

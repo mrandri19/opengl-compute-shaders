@@ -1,13 +1,14 @@
 // Blelloch parallel prefix sum/scan
 // https://developer.nvidia.com/gpugems/gpugems3/part-vi-gpu-computing/chapter-39-parallel-prefix-sum-scan-cuda
-#version 450 core
+#version 460 core
 
 // A single thread operates on two items at a time
-#define N 8
+#define N 32
 #define THREADS (N / 2)
 
 layout(local_size_x = THREADS, local_size_y = 1, local_size_z = 1) in;
 
+// These two need to stay synchronized with the program, of course
 layout(std430, binding = 0) restrict coherent buffer InputData {
   float data[N];
 }
@@ -70,7 +71,9 @@ void prefix_sum2(inout uint offsets[N], uint tid) {
 shared bool results[N];
 shared uint offsets[N];
 
-bool predicate(float x) { return (x > 0.3); }
+bool predicate(float x) { return int(x) % 2 == 0; }
+
+// FIXME(Andrea): there is some kind of bug in the first element
 
 void main() {
   uint tid = gl_LocalInvocationID.x;
