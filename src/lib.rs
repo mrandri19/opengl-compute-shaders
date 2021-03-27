@@ -74,14 +74,14 @@ mod tests {
     fn test_prefix_sum() {
         // *************************************************************************
         // Create OpenGL Context
-        let mut window = make_opengl_window();
+        let _window = make_opengl_window();
         println!("[prefix_sum] created window");
 
         // *************************************************************************
         // Load shader and create program
         let program = make_compute_shader_program(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/shaders/prefix_sum.comp.glsl"
+            "/shaders/single_wg_prefix_sum/prefix_sum.comp.glsl"
         )));
 
         // *************************************************************************
@@ -146,14 +146,14 @@ mod tests {
     fn test_daw() {
         // *************************************************************************
         // Create OpenGL Context
-        let window = make_opengl_window();
+        let _window = make_opengl_window();
         println!("[daw] created window");
 
         // *************************************************************************
         // Load shader and create program
         let program = make_compute_shader_program(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/shaders/prefix_sum.comp.glsl"
+            "/shaders/single_wg_prefix_sum/prefix_sum.comp.glsl"
         )));
 
         // *************************************************************************
