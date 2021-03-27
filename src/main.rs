@@ -163,7 +163,12 @@ fn main() {
     // setup window and opengl context
     use glfw::Context;
 
-    let glfw = glfw::init(glfw::FAIL_ON_ERRORS).unwrap();
+    let mut glfw = glfw::init(glfw::FAIL_ON_ERRORS).unwrap();
+    glfw.window_hint(glfw::WindowHint::Visible(false));
+    glfw.window_hint(glfw::WindowHint::ContextVersion(4, 6));
+    glfw.window_hint(glfw::WindowHint::OpenGlForwardCompat(true));
+    glfw.window_hint(glfw::WindowHint::OpenGlDebugContext(true));
+
     let (mut window, _) = glfw
         .create_window(300, 300, "Hello this is window", glfw::WindowMode::Windowed)
         .expect("Failed to create GLFW window.");
