@@ -1,9 +1,9 @@
 // Blelloch parallel prefix sum/scan
 // https://developer.nvidia.com/gpugems/gpugems3/part-vi-gpu-computing/chapter-39-parallel-prefix-sum-scan-cuda
-#version 450 core
+#version 460 core
 
 // A single thread operates on two items at a time
-#define N 100
+#define N 32 // TODO(Andrea): this should be equal to main.rs's DATA_LEN
 #define THREADS (N / 2)
 
 layout(local_size_x = THREADS, local_size_y = 1, local_size_z = 1) in;
@@ -11,22 +11,15 @@ layout(local_size_x = THREADS, local_size_y = 1, local_size_z = 1) in;
 layout(std430, binding = 0) coherent buffer InputData { float data[]; }
 input_data;
 
-layout(std430, binding = 1) buffer OutputData { float data[]; }
-output_data;
-
 void main() {
   uint tid = gl_LocalInvocationID.x;
 
-  // TODO: Profile first and then use shared memory
-
   // **************************************************************************
-  // Reduce Step
+  // Reduce (or Up-Sweep)
   uint offset = 1;
 
-  for (uint d = N >> 1; d > 0; d >>= 1) {
+  for (uint d = N / 2; d > 0; d /= 2) {
     barrier();
-    memoryBarrier(); // TODO: do I really need both of these? A. yes but maybe
-                     // not when I use shared memory instead
 
     if (tid < d) {
       uint ai = offset * (2 * tid + 1) - 1;
@@ -44,10 +37,9 @@ void main() {
   }
 
   for (uint d = 1; d < N; d *= 2) {
-    offset >>= 1;
+    offset /= 2;
 
     barrier();
-    memoryBarrier();
 
     if (tid < d) {
       uint ai = offset * (2 * tid + 1) - 1;
@@ -59,7 +51,4 @@ void main() {
       input_data.data[bi] += t;
     }
   }
-
-  barrier();
-  memoryBarrier();
 }
