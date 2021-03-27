@@ -3,7 +3,7 @@
 #version 460 core
 
 // A single thread operates on two items at a time
-#define N 32
+#define N -1337
 #define THREADS (N / 2)
 
 layout(local_size_x = THREADS, local_size_y = 1, local_size_z = 1) in;

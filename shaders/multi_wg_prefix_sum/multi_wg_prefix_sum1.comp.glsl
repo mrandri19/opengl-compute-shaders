@@ -4,8 +4,8 @@
 
 // A single thread operates on two items at a time
 
-#define DATA_LEN 32
-#define WORK_GROUPS 2
+#define DATA_LEN -1337
+#define WORK_GROUPS -1337
 #define N (DATA_LEN / WORK_GROUPS)
 #define THREADS (N / 2)
 

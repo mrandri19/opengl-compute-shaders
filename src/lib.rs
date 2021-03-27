@@ -1,11 +1,15 @@
 mod debug_message_callback;
 mod program;
 mod shader;
-mod vertex;
 
 #[cfg(test)]
 mod tests {
     use gl::types::*;
+    use glsl::parser::Parse;
+    use glsl::syntax::PreprocessorDefine;
+    use glsl::visitor::Visit;
+    use glsl::visitor::{Host, Visitor};
+    use std::collections::HashMap;
 
     use std::ffi::CString;
 
@@ -14,8 +18,8 @@ mod tests {
     use crate::debug_message_callback;
     use crate::program::Program;
     use crate::shader;
+    use glsl::syntax::ShaderStage;
 
-    const DATA_LEN: usize = 32;
     const RELATIVE_TOLERANCE: f32 = 1e-8;
 
     fn make_opengl_window() -> glfw::Window {
@@ -39,10 +43,65 @@ mod tests {
         return window;
     }
 
-    fn make_compute_shader_program(source: &str) -> Program {
-        let kernel =
-            shader::Shader::from_source(&CString::new(source).unwrap(), gl::COMPUTE_SHADER)
-                .unwrap();
+    fn make_shader_src<'a>(src: &str, substs: &HashMap<&'a str, usize>) -> String {
+        let mut shader = ShaderStage::parse(src).unwrap();
+
+        let mut transformed_source = String::new();
+        struct MyVisitor<'a> {
+            substs: &'a HashMap<&'a str, usize>,
+        }
+        impl<'a> Visitor for MyVisitor<'a> {
+            fn visit_preprocessor_define(&mut self, define: &mut PreprocessorDefine) -> Visit {
+                match define {
+                    PreprocessorDefine::ObjectLike { ident, value } => {
+                        if value == "-1337" {
+                            if ident.as_str() == "N" {
+                                *value = self.substs["N"].to_string();
+                            }
+                            if ident.as_str() == "B" {
+                                *value = self.substs["B"].to_string();
+                            }
+                            if ident.as_str() == "DATA_LEN" {
+                                *value = self.substs["DATA_LEN"].to_string();
+                            }
+                            if ident.as_str() == "WORK_GROUPS" {
+                                *value = self.substs["WORK_GROUPS"].to_string();
+                            }
+                            if ident.as_str() == "CHUNK_SIZE" {
+                                *value = self.substs["CHUNK_SIZE"].to_string();
+                            }
+                            if ident.as_str() == "CHUNK_X" {
+                                *value = self.substs["CHUNK_Y"].to_string();
+                            }
+                            if ident.as_str() == "CHUNK_Y" {
+                                *value = self.substs["CHUNK_Y"].to_string();
+                            }
+                            if ident.as_str() == "CHUNK_Z" {
+                                *value = self.substs["CHUNK_Z"].to_string();
+                            }
+                        }
+                    }
+                    _ => (),
+                };
+
+                Visit::Parent
+            }
+        }
+
+        let mut my_visitor = MyVisitor { substs };
+        shader.visit(&mut my_visitor);
+
+        glsl::transpiler::glsl::show_translation_unit(&mut transformed_source, &shader);
+
+        transformed_source
+    }
+
+    fn make_compute_shader_program(source: &str, substs: &HashMap<&str, usize>) -> Program {
+        let kernel = shader::Shader::from_source(
+            &CString::new(make_shader_src(source, &substs)).unwrap(),
+            gl::COMPUTE_SHADER,
+        )
+        .unwrap();
         Program::new(vec![(kernel, gl::COMPUTE_SHADER)]).unwrap()
     }
 
@@ -60,6 +119,8 @@ mod tests {
 
     #[test]
     fn test_single_wg_prefix_sum() {
+        // Maximum number of threads is 1024 and each thread processes 2 elements
+        const DATA_LEN: usize = 2048;
         #[derive(Debug, Copy, Clone)]
         #[repr(C, packed)]
         struct InputData {
@@ -79,10 +140,15 @@ mod tests {
 
         // *************************************************************************
         // Load shader and create program
-        let program = make_compute_shader_program(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/shaders/single_wg_prefix_sum/prefix_sum.comp.glsl"
-        )));
+        let mut substs = std::collections::HashMap::new();
+        substs.insert("N", DATA_LEN);
+        let program = make_compute_shader_program(
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/shaders/single_wg_prefix_sum/prefix_sum.comp.glsl"
+            )),
+            &substs,
+        );
 
         // *************************************************************************
         // Create random data
@@ -145,6 +211,7 @@ mod tests {
 
     #[test]
     fn test_single_wg_compaction() {
+        const DATA_LEN: usize = 2048;
         #[derive(Debug, Copy, Clone)]
         #[repr(C, packed)]
         struct InputData {
@@ -164,10 +231,16 @@ mod tests {
 
         // *************************************************************************
         // Load shader and create program
-        let program = make_compute_shader_program(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/shaders/single_wg_compaction/compaction.comp.glsl"
-        )));
+
+        let mut substs = std::collections::HashMap::new();
+        substs.insert("N", DATA_LEN);
+        let program = make_compute_shader_program(
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/shaders/single_wg_compaction/compaction.comp.glsl"
+            )),
+            &substs,
+        );
 
         // *************************************************************************
         // Create random data
@@ -258,6 +331,9 @@ mod tests {
 
     #[test]
     fn test_multiple_wg_prefix_sum() {
+        // TODO(Andrea): understand why it doesn't work for non powers of 2
+        const DATA_LEN: usize = 2048;
+        // TODO(Andrea): understand why it doesn't work for numbers different than 2
         const WORK_GROUPS: usize = 2;
 
         #[derive(Debug, Copy, Clone)]
@@ -279,14 +355,24 @@ mod tests {
 
         // *************************************************************************
         // Load shader and create program
-        let program1 = make_compute_shader_program(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/shaders/multi_wg_prefix_sum/multi_wg_prefix_sum1.comp.glsl"
-        )));
-        let program2 = make_compute_shader_program(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/shaders/multi_wg_prefix_sum/multi_wg_prefix_sum2.comp.glsl"
-        )));
+
+        let mut substs = std::collections::HashMap::new();
+        substs.insert("DATA_LEN", DATA_LEN);
+        substs.insert("WORK_GROUPS", WORK_GROUPS);
+        let program1 = make_compute_shader_program(
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/shaders/multi_wg_prefix_sum/multi_wg_prefix_sum1.comp.glsl"
+            )),
+            &substs,
+        );
+        let program2 = make_compute_shader_program(
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/shaders/multi_wg_prefix_sum/multi_wg_prefix_sum2.comp.glsl"
+            )),
+            &substs,
+        );
 
         // *************************************************************************
         // Create random data
