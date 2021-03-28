@@ -331,10 +331,13 @@ mod tests {
 
     #[test]
     fn test_multiple_wg_prefix_sum() {
-        // TODO(Andrea): understand why it doesn't work for non powers of 2
-        const DATA_LEN: usize = 2048;
-        // TODO(Andrea): understand why it doesn't work for numbers different than 2
-        const WORK_GROUPS: usize = 2;
+        // TODO(Andrea): understand why it doesn't work for non powers of 2 =>
+        // It needs to be padded to closest multiple of two
+        const DATA_LEN: usize = 17;
+        const WORK_GROUPS: usize = 4;
+
+        // See https://developer.nvidia.com/gpugems/gpugems3/part-vi-gpu-computing/chapter-39-parallel-prefix-sum-scan-cuda
+        // 39.2.4 Arrays of Arbitrary Size
 
         #[derive(Debug, Copy, Clone)]
         #[repr(C, packed)]
@@ -439,6 +442,30 @@ mod tests {
             gl::MemoryBarrier(gl::BUFFER_UPDATE_BARRIER_BIT);
         };
 
+        fn inplace_exclusive_prefix_sum(a: &mut [GLfloat; WORK_GROUPS]) {
+            let mut v = a.to_vec();
+            v.insert(0, 0.);
+            for i in 1..v.len() {
+                v[i] += v[i - 1];
+            }
+            v.pop();
+            for i in 0..v.len() {
+                a[i] = v[i];
+            }
+        }
+
+        // TODO(Andrea): should this be a kernel to avoid moving memory?
+        unsafe {
+            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, output_ssbo);
+
+            let ptr = gl::MapBuffer(gl::SHADER_STORAGE_BUFFER, gl::READ_ONLY) as *mut OutputData;
+
+            inplace_exclusive_prefix_sum(&mut ((*ptr).sums));
+
+            gl::UnmapBuffer(gl::SHADER_STORAGE_BUFFER);
+            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
+        }
+
         program2.use_();
         unsafe {
             gl::DispatchCompute(WORK_GROUPS as GLuint, 1, 1);
@@ -448,6 +475,8 @@ mod tests {
         // *************************************************************************
         // Check expected result matches with output
         let output_struct = get_ssbo::<OutputData>(output_ssbo);
+
+        dbg!(&output_struct);
 
         for i in 0..DATA_LEN {
             let output_value = output_struct.data[i];

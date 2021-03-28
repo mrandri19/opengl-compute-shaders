@@ -24,6 +24,6 @@ void main() {
   uint W = gl_WorkGroupID.x;
   uint T = gl_LocalInvocationID.x;
 
-  output_data.data[(W * N) + (2 * T)] += output_data.sums[W - 1];
-  output_data.data[(W * N) + (2 * T + 1)] += output_data.sums[W - 1];
+  output_data.data[(W * N) + (2 * T)] += output_data.sums[W];
+  output_data.data[(W * N) + (2 * T + 1)] += output_data.sums[W];
 }
