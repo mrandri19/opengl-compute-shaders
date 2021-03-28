@@ -17,7 +17,6 @@ layout(std430, binding = 1) coherent buffer OutputData {
   uint sums[N_OVER_B];
   uint offsets[N];
   uint results[N];
-  uint length;
   uint data[N];
 }
 output_data;

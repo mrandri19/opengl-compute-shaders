@@ -282,6 +282,7 @@ mod tests {
         // Check expected result matches with output
         let output_struct = get_ssbo::<OutputData>(output_ssbo);
 
+        assert_eq!(output_struct.length as usize, DATA_LEN / 2);
         for i in 0..DATA_LEN {
             let output_value = output_struct.data[i];
             assert!((expected[i] - output_value).abs() <= (RELATIVE_TOLERANCE * output_value));
@@ -411,8 +412,6 @@ mod tests {
 
     #[test]
     fn test_single_wg_raycasting() {
-        // TODO(Andrea): understand why it doesn't work for non powers of 2 =>
-        // It needs to be padded to closest multiple of two
         const CHUNK_ROWS: usize = 8;
         const CHUNK_COLS: usize = 8;
         const CHUNK_SIZE: usize = CHUNK_ROWS * CHUNK_COLS;
@@ -498,6 +497,171 @@ mod tests {
         let hit = output_struct.hit;
         assert_eq!(hit, [4.0, 4.0, 0.0, 0.0]);
         assert_eq!(output_struct.has_hit, 1);
+
+        // *************************************************************************
+        // Cleanup
+        unsafe { gl::DeleteBuffers(1, &input_ssbo) };
+    }
+
+    #[test]
+    fn test_multiple_wg_compaction() {
+        // TODO(Andrea): understand why it doesn't work for non powers of 2 =>
+        // It needs to be padded to closest multiple of two
+
+        // let N be the number of elements in the input array
+        const N: usize = 131_072;
+        // let B be the number of elements processed in a block
+        const B: usize = 128;
+        // then we need to allocate N/B thread blocks of B/2 threads each (since
+        // each thread processes two elements)
+        const N_OVER_B: usize = N / B;
+
+        // See https://developer.nvidia.com/gpugems/gpugems3/part-vi-gpu-computing/chapter-39-parallel-prefix-sum-scan-cuda
+        // 39.2.4 Arrays of Arbitrary Size
+
+        #[derive(Debug, Copy, Clone)]
+        #[repr(C, packed)]
+        struct InputData {
+            data: [GLuint; N],
+        }
+
+        #[derive(Debug, Copy, Clone)]
+        #[repr(C, packed)]
+        struct OutputData {
+            sums: [GLuint; N_OVER_B],
+            offsets: [GLuint; N],
+            results: [GLuint; N],
+            data: [GLuint; N],
+        }
+
+        // *************************************************************************
+        // Create OpenGL Context
+        let _window = make_opengl_window();
+
+        // *************************************************************************
+        // Load shader and create program
+
+        let mut substs = std::collections::HashMap::new();
+        substs.insert("N", N);
+        substs.insert("B", B);
+        let program1 = make_compute_shader_program(
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/shaders/multi_wg_compaction/multi_wg_compaction1.comp.glsl"
+            )),
+            &substs,
+        );
+        let program2 = make_compute_shader_program(
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/shaders/multi_wg_compaction/multi_wg_compaction2.comp.glsl"
+            )),
+            &substs,
+        );
+
+        // *************************************************************************
+        // Create random data
+        let data = {
+            let mut arr = [0; N];
+            for i in 0..N {
+                arr[i] = i as GLuint + 1;
+            }
+            arr
+        };
+        let input_data = InputData { data };
+
+        // *************************************************************************
+        // Calculate expected result
+
+        fn prefix_sum(data: Vec<GLuint>) -> Vec<GLuint> {
+            let mut v = data.clone();
+            v.insert(0, 0);
+            for i in 1..v.len() {
+                v[i] += v[i - 1];
+            }
+            v.pop();
+            v
+        }
+
+        let expected_offsets = prefix_sum(
+            data.to_vec()
+                .iter()
+                .map(|n| (n % 2 == 0) as GLuint)
+                .collect::<Vec<GLuint>>(),
+        );
+
+        // *************************************************************************
+        // Create input and output SSBOs
+        let input_ssbo = make_input_ssbo(&input_data);
+        let output_ssbo = make_output_ssbo::<OutputData>();
+
+        // *************************************************************************
+        // Run compute shader
+        program1.use_();
+        unsafe {
+            gl::DispatchCompute(N_OVER_B as GLuint, 1, 1);
+            gl::MemoryBarrier(gl::BUFFER_UPDATE_BARRIER_BIT);
+        };
+
+        fn inplace_exclusive_prefix_sum(a: &mut [GLuint; N_OVER_B]) {
+            let mut v = a.to_vec();
+            v.insert(0, 0);
+            for i in 1..v.len() {
+                v[i] += v[i - 1];
+            }
+            v.pop();
+            for i in 0..v.len() {
+                a[i] = v[i];
+            }
+        }
+
+        // TODO(Andrea): should this be a GPU kernel to avoid moving memory?
+        unsafe {
+            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, output_ssbo);
+
+            let ptr = gl::MapBuffer(gl::SHADER_STORAGE_BUFFER, gl::READ_ONLY) as *mut OutputData;
+
+            inplace_exclusive_prefix_sum(&mut ((*ptr).sums));
+
+            gl::UnmapBuffer(gl::SHADER_STORAGE_BUFFER);
+            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
+        }
+
+        program2.use_();
+        unsafe {
+            gl::DispatchCompute(N_OVER_B as GLuint, 1, 1);
+            gl::MemoryBarrier(gl::BUFFER_UPDATE_BARRIER_BIT);
+        };
+
+        // *************************************************************************
+        // Check expected result matches with output
+        let output_struct = get_ssbo::<OutputData>(output_ssbo);
+
+        let offsets = output_struct.offsets;
+
+        assert_eq!(
+            offsets.to_vec(),
+            expected_offsets,
+            "The resulting offsets should match"
+        );
+
+        let computed_len = {
+            let mut i = N - 1;
+            let mut len = 0;
+            loop {
+                if output_struct.results[i] == 1 {
+                    len = output_struct.offsets[i] + 1;
+                    break;
+                }
+                if i > 0 {
+                    i -= 1;
+                } else {
+                    break;
+                }
+            }
+            len
+        };
+        assert_eq!(N / 2, computed_len as usize);
 
         // *************************************************************************
         // Cleanup
