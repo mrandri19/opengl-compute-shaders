@@ -117,6 +117,46 @@ mod tests {
         }
     }
 
+    fn make_input_ssbo<T>(input_data: &T) -> GLuint {
+        let mut ssbo = 0;
+        let index_binding_point = 0;
+        unsafe {
+            gl::GenBuffers(1, &mut ssbo);
+            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, ssbo);
+            gl::NamedBufferData(
+                ssbo,
+                std::mem::size_of::<T>() as GLsizeiptr,
+                std::mem::transmute(input_data),
+                gl::DYNAMIC_READ,
+            );
+
+            gl::BindBufferBase(gl::SHADER_STORAGE_BUFFER, index_binding_point, ssbo);
+
+            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
+        }
+        return ssbo;
+    }
+
+    fn make_output_ssbo<T>() -> GLuint {
+        let mut ssbo = 0;
+        let index_binding_point = 1;
+        unsafe {
+            gl::GenBuffers(1, &mut ssbo);
+            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, ssbo);
+            gl::BufferData(
+                gl::SHADER_STORAGE_BUFFER,
+                std::mem::size_of::<T>() as GLsizeiptr,
+                std::mem::transmute(std::ptr::null::<T>()),
+                gl::DYNAMIC_READ,
+            );
+
+            gl::BindBufferBase(gl::SHADER_STORAGE_BUFFER, index_binding_point, ssbo);
+
+            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
+        }
+        return ssbo;
+    }
+
     #[test]
     fn test_single_wg_prefix_sum() {
         // Maximum number of threads is 1024 and each thread processes 2 elements
@@ -165,26 +205,7 @@ mod tests {
 
         // *************************************************************************
         // Create input and output SSBOs
-        let mut input_ssbo = 0;
-        let input_index_binding_point = 0;
-        unsafe {
-            gl::GenBuffers(1, &mut input_ssbo);
-            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, input_ssbo);
-            gl::NamedBufferData(
-                input_ssbo,
-                std::mem::size_of::<InputData>() as GLsizeiptr,
-                std::mem::transmute(&input_data),
-                gl::DYNAMIC_READ,
-            );
-
-            gl::BindBufferBase(
-                gl::SHADER_STORAGE_BUFFER,
-                input_index_binding_point,
-                input_ssbo,
-            );
-
-            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
-        }
+        let input_ssbo = make_input_ssbo(&input_data);
 
         // *************************************************************************
         // Run compute shader
@@ -264,47 +285,8 @@ mod tests {
 
         // *************************************************************************
         // Create input and output SSBOs
-        let mut input_ssbo = 0;
-        let input_index_binding_point = 0;
-        unsafe {
-            gl::GenBuffers(1, &mut input_ssbo);
-            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, input_ssbo);
-            gl::NamedBufferData(
-                input_ssbo,
-                std::mem::size_of::<InputData>() as GLsizeiptr,
-                std::mem::transmute(&input_data),
-                gl::DYNAMIC_READ,
-            );
-
-            gl::BindBufferBase(
-                gl::SHADER_STORAGE_BUFFER,
-                input_index_binding_point,
-                input_ssbo,
-            );
-
-            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
-        }
-
-        let mut output_ssbo = 0;
-        let output_index_binding_point = 1;
-        unsafe {
-            gl::GenBuffers(1, &mut output_ssbo);
-            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, output_ssbo);
-            gl::BufferData(
-                gl::SHADER_STORAGE_BUFFER,
-                std::mem::size_of::<OutputData>() as GLsizeiptr,
-                std::ptr::null() as *const GLvoid,
-                gl::DYNAMIC_READ,
-            );
-
-            gl::BindBufferBase(
-                gl::SHADER_STORAGE_BUFFER,
-                output_index_binding_point,
-                output_ssbo,
-            );
-
-            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
-        }
+        let input_ssbo = make_input_ssbo(&input_data);
+        let output_ssbo = make_output_ssbo::<OutputData>();
 
         // *************************************************************************
         // Run compute shader
@@ -333,8 +315,8 @@ mod tests {
     fn test_multiple_wg_prefix_sum() {
         // TODO(Andrea): understand why it doesn't work for non powers of 2 =>
         // It needs to be padded to closest multiple of two
-        const DATA_LEN: usize = 17;
-        const WORK_GROUPS: usize = 4;
+        const DATA_LEN: usize = 262_144;
+        const WORK_GROUPS: usize = 128;
 
         // See https://developer.nvidia.com/gpugems/gpugems3/part-vi-gpu-computing/chapter-39-parallel-prefix-sum-scan-cuda
         // 39.2.4 Arrays of Arbitrary Size
@@ -392,47 +374,8 @@ mod tests {
 
         // *************************************************************************
         // Create input and output SSBOs
-        let mut input_ssbo = 0;
-        let input_index_binding_point = 0;
-        unsafe {
-            gl::GenBuffers(1, &mut input_ssbo);
-            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, input_ssbo);
-            gl::NamedBufferData(
-                input_ssbo,
-                std::mem::size_of::<InputData>() as GLsizeiptr,
-                std::mem::transmute(&input_data),
-                gl::DYNAMIC_READ,
-            );
-
-            gl::BindBufferBase(
-                gl::SHADER_STORAGE_BUFFER,
-                input_index_binding_point,
-                input_ssbo,
-            );
-
-            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
-        }
-
-        let mut output_ssbo = 0;
-        let output_index_binding_point = 1;
-        unsafe {
-            gl::GenBuffers(1, &mut output_ssbo);
-            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, output_ssbo);
-            gl::BufferData(
-                gl::SHADER_STORAGE_BUFFER,
-                std::mem::size_of::<OutputData>() as GLsizeiptr,
-                std::ptr::null() as *const GLvoid,
-                gl::DYNAMIC_READ,
-            );
-
-            gl::BindBufferBase(
-                gl::SHADER_STORAGE_BUFFER,
-                output_index_binding_point,
-                output_ssbo,
-            );
-
-            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
-        }
+        let input_ssbo = make_input_ssbo(&input_data);
+        let output_ssbo = make_output_ssbo::<OutputData>();
 
         // *************************************************************************
         // Run compute shader
@@ -454,7 +397,7 @@ mod tests {
             }
         }
 
-        // TODO(Andrea): should this be a kernel to avoid moving memory?
+        // TODO(Andrea): should this be a GPU kernel to avoid moving memory?
         unsafe {
             gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, output_ssbo);
 
@@ -475,8 +418,6 @@ mod tests {
         // *************************************************************************
         // Check expected result matches with output
         let output_struct = get_ssbo::<OutputData>(output_ssbo);
-
-        dbg!(&output_struct);
 
         for i in 0..DATA_LEN {
             let output_value = output_struct.data[i];
