@@ -647,19 +647,16 @@ mod tests {
 
         let computed_len = {
             let mut i = N - 1;
-            let mut len = 0;
             loop {
                 if output_struct.results[i] == 1 {
-                    len = output_struct.offsets[i] + 1;
-                    break;
+                    break output_struct.offsets[i] + 1;
                 }
                 if i > 0 {
                     i -= 1;
                 } else {
-                    break;
+                    break 0;
                 }
             }
-            len
         };
         assert_eq!(N / 2, computed_len as usize);
 
