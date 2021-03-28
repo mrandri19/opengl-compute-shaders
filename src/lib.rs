@@ -53,33 +53,8 @@ mod tests {
         impl<'a> Visitor for MyVisitor<'a> {
             fn visit_preprocessor_define(&mut self, define: &mut PreprocessorDefine) -> Visit {
                 match define {
-                    PreprocessorDefine::ObjectLike { ident, value } => {
-                        if value == "-1337" {
-                            if ident.as_str() == "N" {
-                                *value = self.substs["N"].to_string();
-                            }
-                            if ident.as_str() == "B" {
-                                *value = self.substs["B"].to_string();
-                            }
-                            if ident.as_str() == "DATA_LEN" {
-                                *value = self.substs["DATA_LEN"].to_string();
-                            }
-                            if ident.as_str() == "WORK_GROUPS" {
-                                *value = self.substs["WORK_GROUPS"].to_string();
-                            }
-                            if ident.as_str() == "CHUNK_SIZE" {
-                                *value = self.substs["CHUNK_SIZE"].to_string();
-                            }
-                            if ident.as_str() == "CHUNK_X" {
-                                *value = self.substs["CHUNK_Y"].to_string();
-                            }
-                            if ident.as_str() == "CHUNK_Y" {
-                                *value = self.substs["CHUNK_Y"].to_string();
-                            }
-                            if ident.as_str() == "CHUNK_Z" {
-                                *value = self.substs["CHUNK_Z"].to_string();
-                            }
-                        }
+                    PreprocessorDefine::ObjectLike { ident, value } if value == "-1337" => {
+                        *value = self.substs[ident.as_str()].to_string()
                     }
                     _ => (),
                 };
@@ -102,7 +77,13 @@ mod tests {
             gl::COMPUTE_SHADER,
         )
         .unwrap();
-        Program::new(vec![(kernel, gl::COMPUTE_SHADER)]).unwrap()
+        match Program::new(vec![(kernel, gl::COMPUTE_SHADER)]) {
+            Ok(res) => res,
+            Err(err) => {
+                println!("{}", err);
+                std::process::exit(1);
+            }
+        }
     }
 
     fn get_ssbo<T: Clone>(buffer: GLuint) -> T {
@@ -315,11 +296,10 @@ mod tests {
     fn test_multiple_wg_prefix_sum() {
         // TODO(Andrea): understand why it doesn't work for non powers of 2 =>
         // It needs to be padded to closest multiple of two
-        const DATA_LEN: usize = 262_144;
-        const WORK_GROUPS: usize = 128;
-
         // See https://developer.nvidia.com/gpugems/gpugems3/part-vi-gpu-computing/chapter-39-parallel-prefix-sum-scan-cuda
         // 39.2.4 Arrays of Arbitrary Size
+        const DATA_LEN: usize = 262_144;
+        const WORK_GROUPS: usize = 128;
 
         #[derive(Debug, Copy, Clone)]
         #[repr(C, packed)]
@@ -423,6 +403,101 @@ mod tests {
             let output_value = output_struct.data[i];
             assert!((expected[i] - output_value).abs() <= (RELATIVE_TOLERANCE * output_value));
         }
+
+        // *************************************************************************
+        // Cleanup
+        unsafe { gl::DeleteBuffers(1, &input_ssbo) };
+    }
+
+    #[test]
+    fn test_single_wg_raycasting() {
+        // TODO(Andrea): understand why it doesn't work for non powers of 2 =>
+        // It needs to be padded to closest multiple of two
+        const CHUNK_ROWS: usize = 8;
+        const CHUNK_COLS: usize = 8;
+        const CHUNK_SIZE: usize = CHUNK_ROWS * CHUNK_COLS;
+        type GLvec4 = [GLfloat; 4];
+
+        // See https://developer.nvidia.com/gpugems/gpugems3/part-vi-gpu-computing/chapter-39-parallel-prefix-sum-scan-cuda
+        // 39.2.4 Arrays of Arbitrary Size
+
+        #[derive(Debug, Copy, Clone)]
+        #[repr(C, packed)]
+        struct InputData {
+            chunk: [GLuint; CHUNK_SIZE],
+            ray_start: GLvec4,
+            ray_direction: GLvec4,
+        }
+
+        #[derive(Debug, Copy, Clone)]
+        #[repr(C, packed)]
+        struct OutputData {
+            hit: GLvec4,
+            has_hit: GLboolean,
+        }
+
+        // *************************************************************************
+        // Create OpenGL Context
+        let _window = make_opengl_window();
+
+        // *************************************************************************
+        // Load shader and create program
+
+        let mut substs = std::collections::HashMap::new();
+        substs.insert("CHUNK_ROWS", CHUNK_ROWS);
+        substs.insert("CHUNK_COLS", CHUNK_COLS);
+        substs.insert("MAX_ITERS", 100);
+        substs.insert("THREADS", 1);
+        let program = make_compute_shader_program(
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/shaders/single_wg_raycasting/single_wg_raycasting.comp.glsl"
+            )),
+            &substs,
+        );
+
+        // *************************************************************************
+        // Create random data
+        let chunk = [
+            [0, 0, 0, 0, 1, 0, 0, 0],
+            [0, 0, 0, 0, 1, 0, 0, 0],
+            [0, 0, 0, 0, 1, 0, 0, 0],
+            [0, 0, 0, 0, 1, 0, 0, 0],
+            [0, 0, 0, 0, 1, 0, 0, 0],
+            // hits here ^
+            [0, 0, 0, 0, 1, 0, 0, 0],
+            [0, 0, 0, 0, 1, 0, 0, 0],
+            [0, 0, 0, 0, 1, 0, 0, 0],
+        ];
+
+        let input_data = InputData {
+            chunk: unsafe { std::mem::transmute(chunk) },
+            ray_start: [0.0, 0.0, 0.0, 0.0],
+            ray_direction: [1.0, 1.0, 0.0, 0.0],
+        };
+
+        // *************************************************************************
+        // Calculate expected result
+
+        // *************************************************************************
+        // Create input and output SSBOs
+        let input_ssbo = make_input_ssbo(&input_data);
+        let output_ssbo = make_output_ssbo::<OutputData>();
+
+        // *************************************************************************
+        // Run compute shader
+        program.use_();
+        unsafe {
+            gl::DispatchCompute(1, 1, 1);
+            gl::MemoryBarrier(gl::BUFFER_UPDATE_BARRIER_BIT);
+        };
+
+        // *************************************************************************
+        // Check expected result matches with output
+        let output_struct = get_ssbo::<OutputData>(output_ssbo);
+        let hit = output_struct.hit;
+        assert_eq!(hit, [4.0, 4.0, 0.0, 0.0]);
+        assert_eq!(output_struct.has_hit, 1);
 
         // *************************************************************************
         // Cleanup

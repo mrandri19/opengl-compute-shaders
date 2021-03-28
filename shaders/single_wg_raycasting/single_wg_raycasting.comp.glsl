@@ -1,12 +1,10 @@
-// Blelloch parallel prefix sum/scan
-// https://developer.nvidia.com/gpugems/gpugems3/part-vi-gpu-computing/chapter-39-parallel-prefix-sum-scan-cuda
-#version 450 core
+#version 460 core
 
-#define CHUNK_ROWS 8
-#define CHUNK_COLS 8
+#define CHUNK_ROWS -1337
+#define CHUNK_COLS -1337
 #define CHUNK_SIZE (CHUNK_ROWS * CHUNK_COLS)
-#define MAX_ITERS 100
-#define THREADS 1
+#define MAX_ITERS -1337
+#define THREADS -1337
 
 layout(local_size_x = THREADS, local_size_y = 1, local_size_z = 1) in;
 
