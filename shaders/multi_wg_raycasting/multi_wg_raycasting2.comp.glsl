@@ -22,7 +22,6 @@ layout(std430, binding = 1) coherent buffer OutputData {
   uint sums[N_OVER_B];
   uint offsets[N];
   uint has_hit[N];
-  uint length;
   uvec4 hits[N];
   uvec4 compact_hits[N];
 }
@@ -47,20 +46,5 @@ void main() {
 
   if (bool(output_data.has_hit[ix1])) {
     output_data.compact_hits[output_data.offsets[ix1]] = output_data.hits[ix1];
-  }
-
-  barrier();
-  memoryBarrier();
-
-  if (W == 0) {
-    if (T == 0) {
-      // TODO(Andrea): Could this be done better? Maybe with an atomic?
-      for (uint i = N - 1; i >= 0; i--) {
-        if (bool(output_data.has_hit[i])) {
-          output_data.length = output_data.offsets[i] + 1;
-          break;
-        }
-      }
-    }
   }
 }

@@ -9,7 +9,7 @@
 #define N -1337
 #define B -1337
 #define N_OVER_B (N / B)
-#define MAX_ITERS 400
+#define MAX_ITERS 100
 
 layout(local_size_x = B / 2, local_size_y = 1, local_size_z = 1) in;
 
@@ -23,7 +23,6 @@ layout(std430, binding = 1) coherent buffer OutputData {
   uint sums[N_OVER_B];
   uint offsets[N];
   uint has_hit[N];
-  uint length;
   uvec4 hits[N];
   uvec4 compact_hits[N];
 }
@@ -126,48 +125,48 @@ uvec4 raycast(vec3 ray_start, vec3 ray_direction_, out bool has_hit,
               in uint chunk[CHUNK_SIZE]) {
   vec3 ray_direction = normalize(ray_direction_ + vec3(1e-8, 1e-8, 1e-8));
   vec3 ray_voxel = floor(ray_start);
-  vec3 step = sign(ray_direction);
+  vec3 step_ = sign(ray_direction);
 
-  vec3 t_max = ((ray_voxel + step) - ray_start) / (ray_direction);
-
-  vec3 t_delta = (vec3(1., 1., 1.) / ray_direction) * step;
+  vec3 t_max = ((ray_voxel + step_) - ray_start) / (ray_direction);
+  vec3 t_delta = (vec3(1., 1., 1.) / ray_direction) * step_;
 
   has_hit = false;
   for (int i = 0; i < MAX_ITERS; i++) {
+    // Traverse
     if (t_max.x < t_max.y) {
       if (t_max.x < t_max.z) {
-        ray_voxel.x += step.x;
+        ray_voxel.x += step_.x;
         t_max.x += t_delta.x;
       } else {
-        ray_voxel.z += step.z;
+        ray_voxel.z += step_.z;
         t_max.z += t_delta.z;
       }
     } else {
       if (t_max.y < t_max.z) {
-        ray_voxel.y += step.y;
+        ray_voxel.y += step_.y;
         t_max.y += t_delta.y;
       } else {
-        ray_voxel.z += step.z;
+        ray_voxel.z += step_.z;
         t_max.z += t_delta.z;
       }
     }
-    float x = ray_voxel.x;
-    float y = ray_voxel.y;
-    float z = ray_voxel.z;
 
-    if (x >= CHUNK_X)
+    // Check bounds
+    if (ray_voxel.x >= CHUNK_X || ray_voxel.x < 0)
       break;
-    if (y >= CHUNK_Y)
+    if (ray_voxel.y >= CHUNK_Y || ray_voxel.y < 0)
       break;
-    if (z >= CHUNK_Z)
+    if (ray_voxel.z >= CHUNK_Z || ray_voxel.z < 0)
       break;
 
-    int x_ = int(x);
-    int y_ = int(y);
-    int z_ = int(z);
-    if (input_data.chunk[CHUNK_X * y_ + x_] == 1) {
+    // Check if we are in a voxel full of data
+    int x = int(ray_voxel.x);
+    int y = int(ray_voxel.y);
+    int z = int(ray_voxel.z);
+    if (input_data.chunk[CHUNK_X * CHUNK_Y * z + CHUNK_X * y + x] == 1) {
+      // If we are, return the hit position
       has_hit = true;
-      return uvec4(x_, y_, z_, 0);
+      return uvec4(x, y, z, 1337);
     }
   }
 
@@ -181,11 +180,9 @@ void main() {
   uint ix0 = (W * B) + (2 * T);
   uint ix1 = (W * B) + (2 * T + 1);
 
-  vec3 ray_start = vec3(0., 4., 4.);
-  vec3 ray_direction0 =
-      vec3(4., 0., 0.) + ix0 * vec3(0., 1., 0.) + 0 * vec3(0., 0., 1.);
-  vec3 ray_direction1 =
-      vec3(4., 0., 0.) + ix1 * vec3(0., 1., 0.) + 0 * vec3(0., 0., 1.);
+  vec3 ray_start = vec3(3., 0., 0.);
+  vec3 ray_direction0 = vec3(2.0 * (-0.5 + float(ix0) / 7.0), 1.0, 0.0);
+  vec3 ray_direction1 = vec3(2.0 * (-0.5 + float(ix1) / 7.0), 1.0, 0.0);
 
   output_data.hits[ix0] =
       raycast(ray_start, ray_direction0, has_hit[2 * T], input_data.chunk);

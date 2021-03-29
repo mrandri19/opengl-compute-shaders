@@ -1,3 +1,6 @@
+// https://landonthomas.net/docs/gpu_compute_model_terms_quick_ref.pdf
+// For a quick GPU compute terminology rosetta stone.
+// In the comments I often mix GLSL and NVIDIA's terminology so this should help
 mod debug_message_callback;
 mod program;
 mod shader;
@@ -10,6 +13,9 @@ mod tests {
     use glsl::visitor::Visit;
     use glsl::visitor::{Host, Visitor};
     use std::collections::HashMap;
+
+    type GLvec4 = [GLfloat; 4];
+    type GLuvec4 = [GLuint; 4];
 
     use std::ffi::CString;
 
@@ -415,7 +421,6 @@ mod tests {
         const CHUNK_ROWS: usize = 8;
         const CHUNK_COLS: usize = 8;
         const CHUNK_SIZE: usize = CHUNK_ROWS * CHUNK_COLS;
-        type GLvec4 = [GLfloat; 4];
 
         // See https://developer.nvidia.com/gpugems/gpugems3/part-vi-gpu-computing/chapter-39-parallel-prefix-sum-scan-cuda
         // 39.2.4 Arrays of Arbitrary Size
@@ -659,6 +664,234 @@ mod tests {
             }
         };
         assert_eq!(N / 2, computed_len as usize);
+
+        // *************************************************************************
+        // Cleanup
+        unsafe { gl::DeleteBuffers(1, &input_ssbo) };
+    }
+
+    #[test]
+    fn test_multiple_wg_raycasting() {
+        const CHUNK_X: usize = 7;
+        const CHUNK_Y: usize = 7;
+        const CHUNK_Z: usize = 7;
+        const CHUNK_SIZE: usize = CHUNK_X * CHUNK_Y * CHUNK_Z;
+        // let N be the number of rays
+        const N: usize = 8;
+        // let B be the number of rays processed in a work group
+        const B: usize = 2;
+        // then we need to allocate N/B work groups of B/2 invocations each (since
+        // each invocation processes two elements)
+        const N_OVER_B: usize = N / B;
+        // FIXME: be careful about alignment!!!
+        // Otherwise C, packed and GLSL std430 are not equal
+        assert!(N_OVER_B % 4 == 0, "N_OVER_B must be a multiple of 4");
+
+        #[derive(Debug, Copy, Clone)]
+        #[repr(C, packed)]
+        struct InputData {
+            chunk: [GLuint; CHUNK_SIZE],
+            ray_start: GLuvec4,
+        }
+
+        #[derive(Debug, Copy, Clone)]
+        #[repr(C, packed)]
+        struct OutputData {
+            sums: [GLuint; N_OVER_B],
+            offsets: [GLuint; N],
+            has_hit: [GLuint; N],
+            hits: [GLuvec4; N],
+            compact_hits: [GLuvec4; N],
+        }
+
+        // *************************************************************************
+        // Create OpenGL Context
+        let _window = make_opengl_window();
+
+        // *************************************************************************
+        // Load shader and create program
+
+        let mut substs = std::collections::HashMap::new();
+        substs.insert("CHUNK_X", CHUNK_X);
+        substs.insert("CHUNK_Y", CHUNK_Y);
+        substs.insert("CHUNK_Z", CHUNK_Z);
+        substs.insert("CHUNK_SIZE", CHUNK_SIZE);
+        substs.insert("N", N);
+        substs.insert("B", B);
+        substs.insert("N_OVER_B", N_OVER_B);
+        let program1 = make_compute_shader_program(
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/shaders/multi_wg_raycasting/multi_wg_raycasting1.comp.glsl"
+            )),
+            &substs,
+        );
+        let program2 = make_compute_shader_program(
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/shaders/multi_wg_raycasting/multi_wg_raycasting2.comp.glsl"
+            )),
+            &substs,
+        );
+
+        // *************************************************************************
+        // Create random data
+        //  +-------> x
+        //  |
+        //  v
+        //  y
+        #[rustfmt::skip]
+        let chunk = [
+            [ // z = 0
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [1, 1, 1, 1, 1, 1, 1],
+            ],
+            [ // z = 1
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+            ],
+            [ // z = 2
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+            ],
+            [ // z = 3
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+            ],
+            [ // z = 4
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+            ],
+            [ // z = 5
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+            ],
+            [ // z = 6
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+            ],
+        ];
+        let input_data = InputData {
+            chunk: unsafe { std::mem::transmute(chunk) },
+            ray_start: [0, 0, 0, 0],
+        };
+
+        // TODO(Andrea): make of a better example chunk  and make all rays have
+        // a different direction
+
+        // *************************************************************************
+        // Calculate expected result
+
+        // *************************************************************************
+        // Create input and output SSBOs
+        let input_ssbo = make_input_ssbo(&input_data);
+        let output_ssbo = make_output_ssbo::<OutputData>();
+
+        // *************************************************************************
+        // Run compute shader
+        program1.use_();
+        unsafe {
+            gl::DispatchCompute(N_OVER_B as GLuint, 1, 1);
+            gl::MemoryBarrier(gl::BUFFER_UPDATE_BARRIER_BIT);
+        };
+
+        fn inplace_exclusive_prefix_sum(a: &mut [GLuint; N_OVER_B]) {
+            let mut v = a.to_vec();
+            v.insert(0, 0);
+            for i in 1..v.len() {
+                v[i] += v[i - 1];
+            }
+            v.pop();
+            for i in 0..v.len() {
+                a[i] = v[i];
+            }
+        }
+
+        // TODO(Andrea): should this be a GPU kernel to avoid moving memory?
+        unsafe {
+            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, output_ssbo);
+
+            let ptr = gl::MapBuffer(gl::SHADER_STORAGE_BUFFER, gl::READ_ONLY) as *mut OutputData;
+
+            inplace_exclusive_prefix_sum(&mut ((*ptr).sums));
+
+            gl::UnmapBuffer(gl::SHADER_STORAGE_BUFFER);
+            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
+        }
+
+        program2.use_();
+        unsafe {
+            gl::DispatchCompute(N_OVER_B as GLuint, 1, 1);
+            gl::MemoryBarrier(gl::BUFFER_UPDATE_BARRIER_BIT);
+        };
+
+        // *************************************************************************
+        // Check expected result matches with output
+        let output_struct = get_ssbo::<OutputData>(output_ssbo);
+        let compact_hits = output_struct.compact_hits;
+        assert_eq!(
+            compact_hits,
+            [
+                [1, 6, 0, 1337],
+                [3, 6, 0, 1337],
+                [3, 6, 0, 1337],
+                [5, 6, 0, 1337],
+                [0, 0, 0, 0],
+                [0, 0, 0, 0],
+                [0, 0, 0, 0],
+                [0, 0, 0, 0]
+            ]
+        );
+
+        let computed_len = {
+            let mut i = N - 1;
+            loop {
+                if output_struct.has_hit[i] == 1 {
+                    break output_struct.offsets[i] + 1;
+                }
+                if i > 0 {
+                    i -= 1;
+                } else {
+                    break 0;
+                }
+            }
+        };
+        assert_eq!(4, computed_len as usize);
 
         // *************************************************************************
         // Cleanup
